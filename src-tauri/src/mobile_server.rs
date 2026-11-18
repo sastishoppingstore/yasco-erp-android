@@ -122,7 +122,11 @@ fn serve_static(request: tiny_http::Request, path: &str) {
     header("X-Content-Type-Options", "nosniff"),
   ];
 
-  let _ = request.respond(Response::from_data(file.contents()).with_headers(headers));
+  let mut response = Response::from_data(file.contents());
+  for header in headers {
+    response.add_header(header);
+  }
+  let _ = request.respond(response);
 }
 
 fn has_extension(path: &str) -> bool {
@@ -224,11 +228,11 @@ fn relay(request: tiny_http::Request, response: ureq::Response) {
 
   headers.push(header("Content-Length", &data.len().to_string()));
 
-  let _ = request.respond(
-    Response::from_data(data)
-      .with_status_code(StatusCode(status))
-      .with_headers(headers),
-  );
+  let mut response = Response::from_data(data).with_status_code(StatusCode(status));
+  for header in headers {
+    response.add_header(header);
+  }
+  let _ = request.respond(response);
 }
 
 /// The browser now lives on 127.0.0.1, so upstream cookies must become

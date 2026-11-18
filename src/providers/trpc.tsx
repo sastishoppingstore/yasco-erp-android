@@ -1,9 +1,10 @@
 import { createTRPCReact } from "@trpc/react-query";
-import { httpBatchLink, TRPCClientError } from "@trpc/client";
+import { httpBatchLink, splitLink, TRPCClientError } from "@trpc/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import superjson from "superjson";
 import type { AppRouter } from "../../api/router";
 import type { ReactNode } from "react";
+import { createOfflineFetch } from "@/lib/offline/offlineCache";
 
 export const trpc = createTRPCReact<AppRouter>();
 
@@ -74,21 +75,22 @@ queryClient.getQueryCache().config.onError = (error: any) => {
 
 export const trpcClient = trpc.createClient({
   links: [
-    httpBatchLink({
-      url: "/api/trpc",
-      transformer: superjson,
-      // Tauri/desktop: auth is cookie-based (HTTP-only session cookie set by backend).
-      // Do NOT send Bearer header from localStorage — it does not exist in desktop mode.
-      // credentials: "include" ensures cookies are sent with every request.
-      fetch(input, init) {
-        return globalThis.fetch(input, {
-          ...(init ?? {}),
-          credentials: "include",
-        }).catch((err: any) => {
-          const errorMsg = err?.message || err?.response?.data?.message || "Network or Server Error";
-          throw new Error(errorMsg);
-        });
-      },
+    // Queries and mutations are split so only read-only requests are cached
+    // for offline use; mutations are never replayed from the cache.
+    splitLink({
+      condition: (op) => op.type === "query",
+      true: httpBatchLink({
+        url: "/api/trpc",
+        transformer: superjson,
+        headers: { "x-erp-op": "query" },
+        fetch: createOfflineFetch(true),
+      }),
+      false: httpBatchLink({
+        url: "/api/trpc",
+        transformer: superjson,
+        headers: { "x-erp-op": "mutation" },
+        fetch: createOfflineFetch(false),
+      }),
     }),
   ],
 });
