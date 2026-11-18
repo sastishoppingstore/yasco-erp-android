@@ -57,7 +57,7 @@ Build facts:
 | minSdkVersion | 24 (Android 7.0) |
 | targetSdkVersion / compileSdk | 35 |
 | versionCode | `150600 + <CI run number>` — grows on every build |
-| ABIs | `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` (one universal APK) |
+| ABIs | `arm64-v8a` + `armeabi-v7a` — 64-bit and 32-bit phones (Android Go included) |
 | Signing | release keystore, APK Signature Scheme V1 + V2 + V3 |
 
 Secrets:
@@ -115,6 +115,18 @@ Limitations worth knowing:
   the WebView boots.
 * `index.html` contains an inline splash overlay (logo, wordmark, progress
   bar) that fades out as soon as the bundle loads, with a 6 s hard fallback.
+
+## Install troubleshooting (phone)
+
+* **"App not installed as package appears to be invalid"** — almost always a
+  truncated download or a stale cached file. Use the versioned asset
+  (`YASCO-ERP-<versionCode>.apk`) and compare its SHA-256 with `SHA256.txt`.
+* **"App not installed"** with an existing YASCO app on the phone — the old
+  build was signed with a different key. Uninstall it first, then install.
+* Android Go / low-RAM phones: the release APK only carries the two ARM ABIs
+  (the x86 libraries were emulator-only and made the file ~60 MB larger).
+* Allow "Install unknown apps" for the browser and confirm Play Protect's
+  "Install anyway" prompt when it appears.
 
 ## Back button
 

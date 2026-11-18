@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Generate the YASCO ERP app icon / splash mark.
 
-The logo is a real axonometric 3D construction (three extruded beams forming a
-"Y" around a hexagonal hub), so it stays crisp at every icon size and does not
-depend on an external image service.
+The mark is a real 3D construction: three extruded, rounded beams forming a
+"Y" around a machined gold hexagon.  Everything is drawn as vector geometry and
+rasterised with the Chromium that is already on the machine, so the icon stays
+crisp at every launcher size and does not depend on an image service.
 
 Outputs
     assets/branding/yasco-logo.svg    vector source
     assets/branding/yasco-logo-3d.png 1024px raster (app icon source)
+    assets/branding/splash-512.png    512px raster (native splash)
     public/splash-logo.png            1024px raster (in-app splash)
 """
 from __future__ import annotations
@@ -21,181 +23,168 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BRAND = ROOT / "assets" / "branding"
 SIZE = 1024
 
-# Slight plan rotation + a slightly raised camera: a pure isometric view makes
-# two of the three beams exactly edge-on, which looks flat. 12 degrees keeps the
-# construction symmetric but reveals a lit side face on every beam.
-ROT = math.radians(12)
-COS30 = math.cos(math.radians(30))
-SIN30 = 0.5
-SCALE = 1.0
-OX, OY = SIZE / 2, SIZE * 0.508
+# --- geometry -------------------------------------------------------------
+OX, OY = SIZE / 2, SIZE * 0.492
+ARM_LEN = 252.0          # centre -> tip, in pixels
+BEAM_W = 112.0           # top face width
+GOLD_W = 124.0           # width of the gilded edge under the top face
+DEPTH = 74               # extrusion, pixels
+STEPS = 37               # extrusion slices (2 px each)
+HUB_R = 103.0
+HUB_DEPTH = 16
+HUB_STEPS = 23
 
-ARM_LEN = 272.0       # pixels, from the hub centre
-ARM_HALF = 62.0       # half width of a beam
-# Screen space extrusion: beams are "pulled" down-right, which is what gives
-# the mark its solid, consistently lit 3D body.
-EXT = (8.0, 72.0)
-HUB_R = 110.0
-HUB_LIFT = 20.0
-HUB_EXT = (6.0, 50.0)
-
-# Screen angles: up / lower-right / lower-left (symmetric Y).
-ARMS = [-90.0, 30.0, 150.0]
+ARMS = (-90.0, 30.0, 150.0)
 
 
-def add(p, v, k=1.0):
-    return (p[0] + v[0] * k, p[1] + v[1] * k)
-
-
-def arm_quad(angle: float):
+def pt(angle: float, length: float):
     a = math.radians(angle)
-    ux, uy = math.cos(a), math.sin(a)
-    px, py = -uy, ux
-    inner = -50.0
-    c = (OX, OY)
-    p0 = add(c, (px * ARM_HALF + ux * inner, py * ARM_HALF + uy * inner))
-    p1 = add(c, (ux * ARM_LEN + px * ARM_HALF, uy * ARM_LEN + py * ARM_HALF))
-    p2 = add(c, (ux * ARM_LEN - px * ARM_HALF, uy * ARM_LEN - py * ARM_HALF))
-    p3 = add(c, (-px * ARM_HALF + ux * inner, -py * ARM_HALF + uy * inner))
-    return [p0, p1, p2, p3]
+    return OX + math.cos(a) * length, OY + math.sin(a) * length
 
 
-def poly(pts) -> str:
+def line(angle: float, length: float = ARM_LEN) -> str:
+    x, y = pt(angle, length)
+    return f"M {OX:.2f},{OY:.2f} L {x:.2f},{y:.2f}"
+
+
+def hexagon(radius: float, cx: float = OX, cy: float = OY) -> str:
+    pts = [
+        (cx + math.cos(math.radians(a)) * radius, cy + math.sin(math.radians(a)) * radius)
+        for a in range(-30, 330, 60)
+    ]
     return "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in pts) + " Z"
 
 
-def area(pts) -> float:
-    s = 0.0
-    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
-        s += x1 * y2 - x2 * y1
-    return s / 2
+# --- extrusion layers -----------------------------------------------------
+def extrude(path: str, width: float, fill: str, depth: int, steps: int,
+            dx: float = 34.0, dy: float = 76.0) -> str:
+    """Stack copies of `path` along (dx, dy) to fake a solid extruded body.
 
-
-def prism_sides(quad, ext, skip=()):
-    """All side quads of a prism extruded downwards by `ext`.
-
-    The extrusion is vertical, so every side face ends up at or below the top
-    face; drawing them before the top face makes the top cover exactly the part
-    that should be hidden.
+    The offset is diagonal (light falls from the top-left), so the visible side
+    wall sits on the lower-right of every beam. That is what makes the mark
+    read as 3D instead of as a flat sticker.
     """
     out = []
-    for i, (a, b) in enumerate(zip(quad, quad[1:] + quad[:1])):
-        if i in skip:
-            continue
-        ex, ey = b[0] - a[0], b[1] - a[1]
-        nx, ny = ey, -ex          # outward normal for this vertex order
-        out.append((nx, [a, b, add(b, ext), add(a, ext)]))
-    return out
+    x_step, y_step = dx / steps, dy / steps
+    for i in range(steps, 0, -1):
+        out.append(
+            f'<path d="{path}" fill="none" stroke="{fill}" stroke-width="{width:.1f}" '
+            f'stroke-linecap="round" stroke-linejoin="round" '
+            f'transform="translate({i * x_step:.2f} {i * y_step:.2f})"/>'
+        )
+    return "".join(out)
 
 
-body: list[str] = []
-for angle in ARMS:
-    q = arm_quad(angle)
-    for nx, side in prism_sides(q, EXT, skip=(3,)):
-        if nx < -8:
-            fill = "url(#sideLit)"
-        elif nx > 8:
-            fill = "url(#sideDark)"
-        else:
-            fill = "url(#sideMid)"
-        body.append(f'<path d="{poly(side)}" fill="{fill}" stroke="#06101f" stroke-width="1.2"/>')
-    body.append(f'<path d="{poly(q)}" fill="url(#topFace)" stroke="#f5b301" stroke-opacity="0.45" stroke-width="2.4"/>')
+beams = "".join(line(a) for a in ARMS)
 
-# Gold bevel rims, drawn on top of the side faces.
-bevel: list[str] = []
-for angle in ARMS:
-    bevel.append(f'<path d="{poly(arm_quad(angle))}" fill="none" stroke="url(#goldEdge)" '
-                 f'stroke-width="3.4" stroke-linejoin="round"/>')
-
-# Hexagonal hub sitting on the junction.
-hub_c = (OX, OY - HUB_LIFT)
-hub_pts = [
-    (hub_c[0] + math.cos(math.radians(a)) * HUB_R,
-     hub_c[1] + math.sin(math.radians(a)) * HUB_R)
-    for a in range(0, 360, 60)
-]
-hub_sides = []
-for nx, side in prism_sides(hub_pts, HUB_EXT):
-    fill = "#8a5800" if nx < -8 else ("#6b4300" if nx > 8 else "#7a4c00")
-    hub_sides.append(f'<path d="{poly(side)}" fill="{fill}" stroke="#4a2f00" stroke-width="1.2"/>')
-hub_svg = (
-    "".join(hub_sides)
-    + f'<path d="{poly(hub_pts)}" fill="url(#hubFace)" stroke="#7a4c00" stroke-width="2.4"/>'
-    + f'<path d="{poly(hub_pts)}" fill="none" stroke="#fff3c9" stroke-opacity="0.7" stroke-width="1.6"/>'
-    # inset facet, gives the cap a machined look
-    + f'<path d="{poly([(hub_c[0] + math.cos(math.radians(a)) * HUB_R * 0.58, hub_c[1] + math.sin(math.radians(a)) * HUB_R * 0.58) for a in range(0, 360, 60)])}" '
-      f'fill="none" stroke="#fff0bf" stroke-opacity="0.45" stroke-width="1.4"/>'
+body = []
+# gold silhouette, extruded
+body.append(extrude(beams, GOLD_W, "url(#bodySide)", DEPTH, STEPS))
+# hexagonal hub body, extruded (drawn before the beams so the beams overlap it)
+body.append(
+    f'<g transform="translate(8 {HUB_DEPTH})">'
+    f'<path d="{hexagon(HUB_R)}" fill="url(#hubSide)"/>'
+    "</g>"
 )
 
 svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{SIZE}" height="{SIZE}" viewBox="0 0 {SIZE} {SIZE}">
   <defs>
-    <radialGradient id="bg" cx="50%" cy="34%" r="80%">
-      <stop offset="0%" stop-color="#1a2f58"/>
-      <stop offset="52%" stop-color="#0a1428"/>
-      <stop offset="100%" stop-color="#04070f"/>
+    <radialGradient id="bg" cx="50%" cy="32%" r="82%">
+      <stop offset="0%" stop-color="#1d3563"/>
+      <stop offset="46%" stop-color="#0b1730"/>
+      <stop offset="100%" stop-color="#03060d"/>
     </radialGradient>
-    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.38"/>
-      <stop offset="55%" stop-color="#1d4ed8" stop-opacity="0.12"/>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.40"/>
+      <stop offset="52%" stop-color="#1d4ed8" stop-opacity="0.12"/>
       <stop offset="100%" stop-color="#0b1730" stop-opacity="0"/>
     </radialGradient>
-    <linearGradient id="topFace" gradientUnits="userSpaceOnUse" x1="300" y1="170" x2="640" y2="640">
-      <stop offset="0%" stop-color="#a9c7ff"/>
-      <stop offset="22%" stop-color="#d6e5ff"/>
-      <stop offset="42%" stop-color="#5b8ef7"/>
-      <stop offset="72%" stop-color="#2854b8"/>
-      <stop offset="100%" stop-color="#123173"/>
+    <linearGradient id="beamTop" gradientUnits="userSpaceOnUse" x1="300" y1="180" x2="700" y2="760">
+      <stop offset="0%" stop-color="#dcebff"/>
+      <stop offset="16%" stop-color="#9dc2ff"/>
+      <stop offset="38%" stop-color="#5c92f8"/>
+      <stop offset="68%" stop-color="#2c57be"/>
+      <stop offset="100%" stop-color="#16357c"/>
     </linearGradient>
-    <linearGradient id="sideLit" x1="0%" y1="0%" x2="60%" y2="100%">
-      <stop offset="0%" stop-color="#2b57a8"/>
-      <stop offset="55%" stop-color="#17366c"/>
-      <stop offset="100%" stop-color="#0b1c3a"/>
+    <linearGradient id="goldTop" gradientUnits="userSpaceOnUse" x1="330" y1="240" x2="700" y2="720">
+      <stop offset="0%" stop-color="#fff3c4"/>
+      <stop offset="22%" stop-color="#ffd977"/>
+      <stop offset="52%" stop-color="#f2b62a"/>
+      <stop offset="78%" stop-color="#c98a10"/>
+      <stop offset="100%" stop-color="#8f5f05"/>
     </linearGradient>
-    <linearGradient id="sideMid" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#1e3f78"/>
-      <stop offset="60%" stop-color="#0e2044"/>
-      <stop offset="100%" stop-color="#081528"/>
+    <linearGradient id="goldSide" gradientUnits="userSpaceOnUse" x1="0" y1="240" x2="0" y2="900">
+      <stop offset="0%" stop-color="#b8811a"/>
+      <stop offset="22%" stop-color="#7d5206"/>
+      <stop offset="55%" stop-color="#3f2700"/>
+      <stop offset="100%" stop-color="#120b00"/>
     </linearGradient>
-    <linearGradient id="sideDark" x1="0%" y1="0%" x2="60%" y2="100%">
-      <stop offset="0%" stop-color="#142c55"/>
-      <stop offset="60%" stop-color="#0a1830"/>
-      <stop offset="100%" stop-color="#06101f"/>
+    <linearGradient id="bodySide" gradientUnits="userSpaceOnUse" x1="0" y1="250" x2="0" y2="900">
+      <stop offset="0%" stop-color="#4a78d4"/>
+      <stop offset="14%" stop-color="#2a4c92"/>
+      <stop offset="46%" stop-color="#122750"/>
+      <stop offset="100%" stop-color="#050a14"/>
     </linearGradient>
-    <linearGradient id="goldEdge" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#ffe7a0"/>
-      <stop offset="42%" stop-color="#f7bf2e"/>
-      <stop offset="100%" stop-color="#b47600"/>
+    <linearGradient id="hubSide" gradientUnits="userSpaceOnUse" x1="0" y1="430" x2="0" y2="700">
+      <stop offset="0%" stop-color="#8a5c06"/>
+      <stop offset="55%" stop-color="#4d3200"/>
+      <stop offset="100%" stop-color="#1c1100"/>
     </linearGradient>
-    <linearGradient id="hubFace" gradientUnits="userSpaceOnUse" x1="380" y1="330" x2="700" y2="700">
-      <stop offset="0%" stop-color="#fff0bf"/>
-      <stop offset="38%" stop-color="#f9c94f"/>
-      <stop offset="100%" stop-color="#a86b00"/>
+    <linearGradient id="hubTop" gradientUnits="userSpaceOnUse" x1="410" y1="300" x2="660" y2="640">
+      <stop offset="0%" stop-color="#fffaf0"/>
+      <stop offset="26%" stop-color="#ffe49b"/>
+      <stop offset="58%" stop-color="#f6bf35"/>
+      <stop offset="100%" stop-color="#b2790a"/>
     </linearGradient>
-    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="30"/>
+    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="52%" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-45%" y="-45%" width="190%" height="190%">
+      <feGaussianBlur stdDeviation="26"/>
     </filter>
-    <filter id="drop" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="38"/>
+    <filter id="drop" x="-45%" y="-45%" width="190%" height="190%">
+      <feGaussianBlur stdDeviation="34"/>
     </filter>
   </defs>
 
   <rect width="{SIZE}" height="{SIZE}" fill="url(#bg)"/>
-  <circle cx="{SIZE/2}" cy="{SIZE*0.44}" r="{SIZE*0.40}" fill="url(#glow)"/>
+  <circle cx="{SIZE/2:.0f}" cy="{SIZE*0.43:.0f}" r="{SIZE*0.43:.0f}" fill="url(#halo)"/>
 
   <!-- hexagonal halo -->
-  <path d="M 512,214 L 782,370 L 782,682 L 512,838 L 242,682 L 242,370 Z"
-        fill="none" stroke="#4d7ff0" stroke-opacity="0.20" stroke-width="2.5"/>
+  <path d="{hexagon(392, SIZE/2, SIZE*0.49)}" fill="none"
+        stroke="#5b8cff" stroke-opacity="0.20" stroke-width="2.4"/>
 
   <!-- contact shadow -->
-  <ellipse cx="536" cy="766" rx="310" ry="56" fill="#000610" opacity="0.62" filter="url(#drop)"/>
-  <ellipse cx="536" cy="752" rx="220" ry="32" fill="#2f6bff" opacity="0.16" filter="url(#soft)"/>
+  <ellipse cx="{OX + 14:.0f}" cy="{OY + DEPTH + 92:.0f}" rx="300" ry="62"
+           fill="#000409" opacity="0.66" filter="url(#drop)"/>
+  <ellipse cx="{OX + 14:.0f}" cy="{OY + DEPTH + 74:.0f}" rx="214" ry="34"
+           fill="#2f6bff" opacity="0.16" filter="url(#soft)"/>
 
   <g>
     {''.join(body)}
-    {''.join(bevel)}
-    {hub_svg}
-  </g>
 
+    <!-- beams: gilded edge + blue top face -->
+    <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="{beams}" stroke="url(#goldTop)" stroke-width="{GOLD_W}"/>
+      <path d="{beams}" stroke="url(#beamTop)" stroke-width="{BEAM_W}"/>
+    </g>
+
+    <!-- hexagonal hub -->
+    <path d="{hexagon(HUB_R)}" fill="url(#hubSide)"/>
+    <path d="{hexagon(HUB_R)}" fill="url(#hubTop)" stroke="#6d4704" stroke-width="2"/>
+    <path d="{hexagon(HUB_R * 0.82)}" fill="none" stroke="#fff8e2"
+          stroke-opacity="0.62" stroke-width="2.4" stroke-linejoin="round"/>
+    <path d="{hexagon(HUB_R * 0.46)}" fill="none" stroke="#8a5c06"
+          stroke-opacity="0.35" stroke-width="2"/>
+    <path d="M {OX - HUB_R * 0.44:.1f},{OY - HUB_R * 0.34:.1f}
+             L {OX + HUB_R * 0.10:.1f},{OY - HUB_R * 0.62:.1f}
+             L {OX + HUB_R * 0.52:.1f},{OY - HUB_R * 0.10:.1f}"
+          fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="10"
+          stroke-linecap="round" filter="url(#soft)"/>
+
+  </g>
 </svg>
 '''
 
@@ -217,12 +206,10 @@ def main() -> None:
     html = BRAND / "render.html"
     html.write_text(
         '<!doctype html><meta charset="utf-8">'
-        '<style>html,body{margin:0;padding:0;background:#04070f;overflow:hidden}'
-        f'svg{{display:block}}</style>{svg}',
+        '<style>html,body{margin:0;padding:0;background:#03060d;overflow:hidden}'
+        "svg{display:block}</style>" + svg,
         encoding="utf-8",
     )
-    # The headless window is taller than the artwork; the extra strip is
-    # cropped away below instead of relying on viewport height.
     subprocess.run(
         [
             str(chrome[-1]), "--headless", "--no-sandbox", "--disable-gpu",
@@ -236,14 +223,21 @@ def main() -> None:
     )
     html.unlink(missing_ok=True)
 
-    # Crop to the logo square (removes Chromium's leftover strip, if any).
-    convert = subprocess.run(["bash", "-lc", "command -v convert"], capture_output=True, text=True)
-    if convert.stdout.strip():
-        subprocess.run([
-            "convert", str(png), "-crop", f"{SIZE}x{SIZE}+0+0", "+repage",
-            "-background", "#04070f", "-alpha", "remove", "-alpha", "off",
-            str(png),
-        ], check=True)
+    has_convert = subprocess.run(
+        ["bash", "-lc", "command -v convert"], capture_output=True, text=True
+    ).stdout.strip()
+    if has_convert:
+        subprocess.run(
+            [
+                "convert", str(png), "-crop", f"{SIZE}x{SIZE}+0+0", "+repage",
+                "-background", "#03060d", "-alpha", "remove", "-alpha", "off", str(png),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["convert", str(png), "-resize", "512x512", str(BRAND / "splash-512.png")],
+            check=True,
+        )
 
     icon = BRAND / "yasco-logo-3d.png"
     icon.write_bytes(png.read_bytes())

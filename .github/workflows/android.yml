@@ -152,9 +152,12 @@ jobs:
       - name: Patch Android project (manifest, SDK levels, splash, back button)
         run: python3 scripts/patch-android.py
 
-      # One universal APK containing arm64-v8a, armeabi-v7a, x86 and x86_64.
-      - name: Build universal APK (4 ABIs)
-        run: npx tauri android build --apk --target aarch64 armv7 i686 x86_64
+      # One universal APK for real phones: arm64-v8a (all modern devices) and
+      # armeabi-v7a (32-bit phones, incl. most Android Go hardware). The x86
+      # libraries are emulator-only and used to add ~60 MB to every download,
+      # which is what made the file fail to finish downloading on a phone.
+      - name: Build universal APK (ARM phones)
+        run: npx tauri android build --apk --target aarch64 armv7
 
       - name: Sign APK (V1 + V2 + V3)
         env:
@@ -224,15 +227,19 @@ jobs:
           echo "=== ABIs ==="
           NATIVE=$(grep "native-code:" badging.txt)
           echo "$NATIVE"
-          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+          for abi in arm64-v8a armeabi-v7a; do
             echo "$NATIVE" | grep -q "'$abi'" || { echo "::error::missing ABI $abi"; exit 1; }
           done
+          # 32-bit phones (Android Go) must never be left without a native lib.
+          echo "$NATIVE" | grep -q "'armeabi-v7a'" || { echo "::error::no 32-bit support"; exit 1; }
 
           echo "=== permission ==="
           grep -q "uses-permission: name='android.permission.INTERNET'" badging.txt
 
           echo "=== checksum ==="
           sha256sum "$APK" | tee checksum.txt
+          # Sidecar file so the download can be checked on the phone / PC.
+          cp checksum.txt SHA256.txt
           echo "SHA256=$(cut -d' ' -f1 checksum.txt)" >> "$GITHUB_ENV"
 
       # Actions artifact storage quota par depend nahi karta: APK seedha
@@ -247,13 +254,15 @@ jobs:
 
             - versionCode: `${{ env.VERSION_CODE }}` (build ${{ github.run_number }})
             - minSdk 24 (Android 7.0) · targetSdk 35
-            - ABIs: arm64-v8a, armeabi-v7a, x86, x86_64
+            - ABIs: arm64-v8a, armeabi-v7a (phones)
             - Signature: V1 + V2 + V3 (YASCO release key)
             - SHA-256: `${{ env.SHA256 }}`
             - Commit: `${{ github.sha }}`
           files: |
+            YASCO-ERP.apk
             YASCO-ERP-*.apk
             checksum.txt
+            SHA256.txt
           fail_on_unmatched_files: true
 
       # Public download home. The landing page links to
@@ -268,14 +277,19 @@ jobs:
           name: YASCO ERP Android — build ${{ github.run_number }}
           make_latest: true
           body: |
-            Universal signed APK for Android 7.0+.
+            Signed APK for Android 7.0+ phones (including Android Go).
 
             - versionCode `${{ env.VERSION_CODE }}` · version 15.6.1
-            - 4 ABIs (arm64-v8a, armeabi-v7a, x86, x86_64)
+            - ABIs: arm64-v8a + armeabi-v7a (64-bit and 32-bit phones)
             - V1 + V2 + V3 signatures
             - SHA-256: `${{ env.SHA256 }}`
-            - Direct link: https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk
-          files: YASCO-ERP.apk
+            - Stable link: https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk
+            - If an older YASCO app is installed, uninstall it first (different
+              signing key would block the update).
+          files: |
+            YASCO-ERP.apk
+            YASCO-ERP-*.apk
+            SHA256.txt
           fail_on_unmatched_files: true
 
       # A truncated upload is the classic cause of "package appears to be
