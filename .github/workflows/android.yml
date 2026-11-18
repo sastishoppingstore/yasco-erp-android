@@ -182,3 +182,21 @@ jobs:
             - Direct link: https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk
           files: YASCO-ERP-*.apk
           fail_on_unmatched_files: true
+
+      # Mirror the APK to the VPS as well, so customers can download it from
+      # https://yasco.tech/YASCO-ERP.apk (no GitHub redirect). Same restricted
+      # deploy key as the landing page: it can only write that one file.
+      - name: Mirror APK to yasco.tech
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -e
+          test -n "$VPS_SSH_KEY" || { echo "Missing VPS_SSH_KEY secret"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 203.161.63.59 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy_key -T -o StrictHostKeyChecking=yes root@203.161.63.59 deploy-apk \
+            < "YASCO-ERP-${{ github.run_number }}.apk"
+          sleep 2
+          curl -sI --max-time 60 https://yasco.tech/YASCO-ERP.apk | head -4

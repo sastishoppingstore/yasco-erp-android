@@ -26,13 +26,15 @@ remote-URL wrapper.
 
 ## Install
 
-Download the latest APK from the public download repository:
+Every build is published twice, both always serve the newest APK:
 
-`https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk`
+| Link | Source |
+| --- | --- |
+| `https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk` | GitHub release (linked from the landing page footer) |
+| `https://yasco.tech/YASCO-ERP.apk` | mirror on the website's own server |
 
-On the phone: open the link, download, allow *Install unknown apps*, install and
-sign in with the normal ERP account. The landing page footer links to the same
-URL, which always serves the newest build.
+On the phone: open one of the links, download, allow *Install unknown apps*,
+install and sign in with the normal ERP account.
 
 ## Build
 
@@ -55,6 +57,7 @@ Secrets:
 | `ANDROID_KEY_ALIAS` | key alias (`yasco`) |
 | `ANDROID_KEY_PASSWORD` | key password |
 | `DOWNLOAD_REPO_TOKEN` | PAT used to publish the APK to `yasco-erp-download` |
+| `VPS_SSH_KEY` | restricted key that can only write the landing page and `/var/www/YASCO-ERP.apk` |
 
 If the keystore is lost, Android will refuse to update an installed app — keep a
 backup (`~/.secrets/yasco-release.keystore` on the build machine).

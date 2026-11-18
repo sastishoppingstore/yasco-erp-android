@@ -82,7 +82,7 @@ def patch_main_activity() -> str:
     if not match:
         sys.exit(f"cannot find MainActivity class declaration in {path}")
 
-    inserted = match.group(1) + "\n" + BACK_NAV + text[match.end():]
+    inserted = text[: match.start()] + match.group(1) + "\n" + BACK_NAV + text[match.end():]
     path.write_text(inserted, encoding="utf-8")
     return f"{path.name}: back navigation enabled"
 
