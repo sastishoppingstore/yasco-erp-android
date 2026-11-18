@@ -18,6 +18,7 @@ on:
       - "src/lib/offline/**"
       - "src/components/OfflineBar.tsx"
       - "scripts/patch-android.py"
+      - ".github/scripts/emulator-smoke.sh"
       - ".github/workflows/android-smoke.yml"
 
 concurrency:
@@ -134,43 +135,4 @@ jobs:
           profile: pixel_5
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: |
-            set -e
-            APK="${SMOKE_APK:-$GITHUB_WORKSPACE/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk}"
-            echo "APK: $APK"
-            test -f "$APK" || { echo "::error::APK missing at $APK"; exit 1; }
-            adb install -r -t "$APK"
-            adb logcat -c
-            adb shell am start -W -n com.yasco.erp/.MainActivity
-            sleep 20
-
-            echo "=== foreground activity ==="
-            adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3
-
-            echo "=== process ==="
-            adb shell pidof com.yasco.erp
-
-            echo "=== webview errors (must be empty) ==="
-            if adb logcat -d | grep -E "ERR_CONNECTION_REFUSED|net::ERR_|FATAL EXCEPTION"; then
-              echo "::error::WebView/app failure detected"
-              exit 1
-            fi
-
-            # At the first screen there is no WebView history yet, so wry falls
-            # back to the default behaviour and the activity finishes. That is
-            # correct. What must never happen is a crash.
-            echo "=== back button ==="
-            adb shell input keyevent KEYCODE_BACK
-            sleep 3
-            if adb shell pidof com.yasco.erp >/dev/null; then
-              echo "back navigated inside the app (history existed)"
-            else
-              echo "app closed on back (no history at the start screen)"
-            fi
-
-            if adb logcat -d | grep -E "FATAL EXCEPTION|ERR_CONNECTION_REFUSED|net::ERR_"; then
-              echo "::error::crash or WebView load failure after back press"
-              exit 1
-            fi
-
-            echo "smoke test passed"
+          script: bash "${{ github.workspace }}/.github/scripts/emulator-smoke.sh"
