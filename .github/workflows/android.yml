@@ -65,20 +65,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      # The hosted runner already ships the Android SDK; installing packages
+      # directly avoids the broken `sdkmanager tools` call in setup-android.
       - name: Install Android NDK + SDK packages
         run: |
-          sdkmanager --install \
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then
+            SDKM="$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
+          fi
+          test -x "$SDKM" || { echo "sdkmanager not found"; ls -la "$SDK"; exit 1; }
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" --install \
             "platform-tools" \
             "platforms;android-34" \
             "platforms;android-35" \
             "build-tools;34.0.0" \
             "build-tools;35.0.0" \
             "ndk;27.0.12077973" >/dev/null
-          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          ls "$SDK/ndk"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
