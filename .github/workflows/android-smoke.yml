@@ -99,6 +99,31 @@ jobs:
       - name: Build x86_64 APK
         run: npx tauri android build --apk --target x86_64
 
+      - name: Sign APK for install
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+          test -n "$KEYSTORE_BASE64" || { echo "Missing ANDROID_KEYSTORE_BASE64 secret"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          RAW=$(find src-tauri/gen/android/app/build/outputs/apk -name "*-unsigned.apk" | head -1)
+          test -n "$RAW" || { echo "no unsigned APK produced"; exit 1; }
+          echo "unsigned: $RAW"
+          "$BT/zipalign" -p -f 4 "$RAW" aligned.apk
+          "$BT/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out YASCO-ERP-smoke.apk aligned.apk
+          "$BT/apksigner" verify --print-certs YASCO-ERP-smoke.apk | head -3
+          rm -f release.keystore aligned.apk
+          ls -lh YASCO-ERP-smoke.apk
+
       - name: Locate built APK
         run: |
           set -e

@@ -8,7 +8,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APK_DIR="$ROOT/src-tauri/gen/android/app/build/outputs/apk"
-APK="$(find "$APK_DIR" -name '*.apk' | head -1)"
+
+# Prefer the signed APK produced by the "Sign APK for install" step; an
+# unsigned build cannot be installed (INSTALL_PARSE_FAILED_NO_CERTIFICATES).
+if [ -f "$ROOT/YASCO-ERP-smoke.apk" ]; then
+  APK="$ROOT/YASCO-ERP-smoke.apk"
+else
+  APK="$(find "$APK_DIR" -name '*-signed.apk' | head -1)"
+  [ -n "$APK" ] || APK="$(find "$APK_DIR" -name '*.apk' | head -1)"
+fi
 
 echo "workspace: $ROOT"
 echo "APK: ${APK:-<none>}"
