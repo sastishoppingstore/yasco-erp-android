@@ -116,7 +116,7 @@ jobs:
           set -e
           F=$(find src-tauri/gen/android/app/src/main/java -name MainActivity.kt | head -1)
           echo "$F"
-          grep -q "handleBackNavigation = true" "$F" || { echo "::error::back navigation patch missing"; exit 1; }
+          grep -qE "handleBackNavigation.*= *true" "$F" || { echo "::error::back navigation patch missing"; exit 1; }
           head -12 "$F"
 
       - name: Enable KVM
