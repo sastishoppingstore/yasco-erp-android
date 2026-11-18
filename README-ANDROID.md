@@ -26,48 +26,78 @@ remote-URL wrapper.
 
 ## Install
 
-Download the latest APK from the repository **Releases** page:
+Download the latest APK from the public download repository:
 
-`https://github.com/sastishoppingstore/yasco-erp-android/releases`
+`https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk`
 
-Every push to `main` produces a new release `android-build-<n>` with a signed
-`YASCO-ERP-<n>.apk` (arm64). On the phone: open the release, download the APK,
-allow "Install unknown apps" for the browser, install, then log in with the
-normal ERP account.
+On the phone: open the link, download, allow *Install unknown apps*, install and
+sign in with the normal ERP account. The landing page footer links to the same
+URL, which always serves the newest build.
 
 ## Build
 
 GitHub Actions → **Android Build** → *Run workflow*, or push to `main`.
-The signed APK is published as a GitHub Release (Actions artifact storage quota
-is not used).
 
-The keystore lives only in repository secrets:
+| Workflow | Purpose |
+| --- | --- |
+| `android.yml` | Release build (arm64), signed APK, published to GitHub Releases |
+| `android-smoke.yml` | Boots an emulator, installs the APK, checks WebView + back button |
+
+Every push produces `android-build-<n>` in this repository and `v1.0.<n>` in the
+public download repository (Actions artifact storage is not used).
+
+Secrets:
 
 | Secret | Meaning |
 | --- | --- |
 | `ANDROID_KEYSTORE_BASE64` | base64 of `release.keystore` |
 | `ANDROID_KEYSTORE_PASSWORD` | store password |
-| `ANDROID_KEY_ALIAS` | key alias |
+| `ANDROID_KEY_ALIAS` | key alias (`yasco`) |
 | `ANDROID_KEY_PASSWORD` | key password |
+| `DOWNLOAD_REPO_TOKEN` | PAT used to publish the APK to `yasco-erp-download` |
 
-If the keystore is lost, Android will refuse to update an installed app —
-keep a backup. The current keystore backup is outside this repository.
+If the keystore is lost, Android will refuse to update an installed app — keep a
+backup (`~/.secrets/yasco-release.keystore` on the build machine).
 
 ## Offline behaviour
 
 | Area | Status |
 | --- | --- |
-| App shell / navigation / UI | ✅ Fully offline (assets are in the APK) |
+| App shell / navigation / UI | ✅ Fully offline (assets are inside the APK) |
 | Static screens, forms, local calculations | ✅ Offline |
-| Reading server data | ⏳ offline query cache (next step) |
-| Writing server data while offline | ⏳ sync queue (next step) |
+| Reading server data | ✅ Last successful response per query is cached in IndexedDB and served when the ERP is unreachable |
+| Writing server data while offline | ✅ Mutations are queued in IndexedDB and replayed in order when the connection returns |
+| Queue visibility | ✅ Floating bar: pending/rejected count, per-item retry and discard |
 
-The ERP already contains two offline engines that this app can reuse:
+How the write queue behaves (`src/lib/offline/mutationQueue.ts`):
 
-* `src/lib/desktop/*` + `desktop/backend/*` — SQLite mirror used by the
-  Windows desktop build (Node sidecar, not available on Android).
-* `src/lib/db/localDatabase.ts` + `src/lib/sync/*` — Dexie/IndexedDB queue and
-  pull/push engine (runs in the WebView, works on Android).
+1. A mutation that cannot be delivered (no network, or the loopback proxy
+   answers `503`) is stored with its exact request body.
+2. The UI gets a marker result `{ ok: true, offline: true, queued: true }`, so
+   the screen does not throw, and the floating bar shows the pending count.
+3. When connectivity comes back (`online` event, app foreground, or every 20 s)
+   the queue is replayed **in the original order**, one request at a time.
+4. If the server answers with an error (401/403/422/500), the flush **stops** at
+   that item so later changes cannot overtake it. The item is marked *rejected*
+   with the server message and can be retried or discarded from the bar.
+
+Limitations worth knowing:
+
+* Requests are identified only by their body, so a double tap that produces two
+  different bodies is queued twice (identical bodies are de-duplicated).
+* Server-side IDs are unknown while offline: a screen that immediately navigates
+  to `.../<new id>` will not have an id. Navigation itself is unaffected.
+* Conflicts are resolved by the server when the queued change is applied; there
+  is no field level merge.
+
+## Back button
+
+`tauri android init` generates a `MainActivity` that inherits
+`handleBackNavigation = false`, which closes the app from any screen. During CI,
+`scripts/patch-android.py` sets it to `true`, so the hardware back button walks
+the WebView history (React Router entries) and only closes the app when there is
+nothing left to go back to. The emulator smoke test presses back and asserts the
+process is still alive.
 
 ## Local desktop build (unchanged)
 

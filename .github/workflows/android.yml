@@ -112,23 +112,8 @@ jobs:
       - name: Init Android project
         run: npx tauri android init --ci
 
-      - name: Allow loopback HTTP
-        run: |
-          set -e
-          M=src-tauri/gen/android/app/src/main/AndroidManifest.xml
-          python3 - "$M" <<'PY'
-          import re, sys
-          p = sys.argv[1]
-          s = open(p, encoding='utf-8').read()
-          if 'usesCleartextTraffic' not in s:
-              s = re.sub(r'<application\b', '<application android:usesCleartextTraffic="true"', s, count=1)
-          # The ERP is served by the app's own loopback server.
-          if 'android.permission.INTERNET' not in s:
-              s = s.replace('<application', '<uses-permission android:name="android.permission.INTERNET"/>\n    <application', 1)
-          open(p, 'w', encoding='utf-8').write(s)
-          print('manifest patched')
-          PY
-          grep -o 'usesCleartextTraffic="[a-z]*"' "$M" || true
+      - name: Patch Android project (manifest + back button)
+        run: python3 scripts/patch-android.py
 
       - name: Build APK (arm64)
         run: npx tauri android build --apk --target aarch64
@@ -174,5 +159,26 @@ jobs:
 
             Download the `.apk` below and install it on the phone
             (allow "Install unknown apps" for the browser/file manager).
+          files: YASCO-ERP-*.apk
+          fail_on_unmatched_files: true
+
+      # Public download home. The landing page links to
+      #   <public repo>/releases/latest/download/YASCO-ERP.apk
+      # so it always serves the newest build without any page edit.
+      - name: Publish public download
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: sastishoppingstore/yasco-erp-download
+          token: ${{ secrets.DOWNLOAD_REPO_TOKEN }}
+          tag_name: v1.0.${{ github.run_number }}
+          name: YASCO ERP Android — build ${{ github.run_number }}
+          make_latest: true
+          body: |
+            Bundled ERP for Android (arm64, signed).
+
+            - Version 15.6.1 (versionCode 150601) — build ${{ github.run_number }}
+            - Commit: ${{ github.sha }}
+            - Offline: app shell, cached reads **and** queued writes
+            - Direct link: https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk
           files: YASCO-ERP-*.apk
           fail_on_unmatched_files: true

@@ -38,7 +38,7 @@ function handleUnauthorized() {
   }
 }
 
-const queryClient = new QueryClient({
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: (failureCount, error: any) => {

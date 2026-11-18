@@ -12,6 +12,7 @@ import { LicenseGate } from "@/providers/license-gate"
 import { ThemeProvider } from "@/providers/theme"
 import { LayoutThemeProvider } from "@/providers/layoutTheme"
 import { ErrorBoundary } from "@/components/ErrorBoundary"
+import { OfflineBar } from "@/components/OfflineBar"
 import App from './App.tsx'
 
 // If a redeploy replaces the hashed chunks a still-open tab references, Vite
@@ -60,6 +61,7 @@ createRoot(document.getElementById('root')!).render(
                   <ThemeProvider>
                      <LayoutThemeProvider>
                        <App />
+                       <OfflineBar />
                        <Toaster richColors position="top-center" closeButton />
                      </LayoutThemeProvider>
                   </ThemeProvider>

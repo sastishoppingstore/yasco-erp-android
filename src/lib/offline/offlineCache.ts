@@ -1,4 +1,6 @@
 import Dexie, { type Table } from "dexie";
+import superjson from "superjson";
+import { enqueue as enqueueMutation } from "./mutationQueue";
 
 /**
  * Offline query cache.
@@ -97,10 +99,60 @@ export async function clearOfflineCache(): Promise<void> {
 }
 
 /**
+ * Response handed back to tRPC when a mutation could not be delivered and was
+ * queued instead.
+ *
+ * The shape must match what `httpBatchLink` expects: an array with one entry
+ * per operation, serialised with the same transformer (superjson). The data is
+ * a small marker object rather than `null` so that callers doing
+ * `const saved = await create.mutateAsync(...)` and then reading a property do
+ * not crash — they simply get `undefined`.
+ */
+function queuedResponse(body: string): Response {
+  let count = 1;
+  try {
+    const ops = superjson.parse<unknown>(body);
+    if (Array.isArray(ops) && ops.length > 0) count = ops.length;
+  } catch {
+    /* fall back to a single result */
+  }
+
+  const payload = Array.from({ length: count }, () => ({
+    result: { data: { ok: true, offline: true, queued: true } },
+  }));
+
+  return new Response(superjson.stringify(payload), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "x-erp-queued": "1",
+    },
+  });
+}
+
+async function queueMutation(url: string, body: string, reason: string): Promise<boolean> {
+  if (!body) return false;
+
+  let methods: string[] = [];
+  try {
+    const ops = superjson.parse<Array<{ method?: string }>>(body);
+    if (Array.isArray(ops)) {
+      methods = ops.map((op) => op?.method).filter(Boolean) as string[];
+    }
+  } catch {
+    /* the body is stored byte-for-byte anyway */
+  }
+
+  return enqueueMutation({ url, body, methods, reason });
+}
+
+/**
  * fetch() wrapper used by the tRPC links.
  *
- * `isQuery` must be true only for query batches: those are the only requests
- * that are safe to answer from the cache.
+ * `isQuery` must be true only for query batches:
+ *   * queries are cached in IndexedDB and served back when offline,
+ *   * mutations are queued in IndexedDB and replayed when the ERP is reachable
+ *     again.
  */
 export function createOfflineFetch(isQuery: boolean) {
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -131,9 +183,13 @@ export function createOfflineFetch(isQuery: boolean) {
       }
 
       // 503 = loopback proxy could not reach the hosted ERP.
-      if (isQuery && response.status === 503) {
-        const hit = await readCache(url, body);
-        if (hit) return cachedResponse(hit);
+      if (response.status === 503) {
+        if (isQuery) {
+          const hit = await readCache(url, body);
+          if (hit) return cachedResponse(hit);
+        } else if (await queueMutation(url, body, "ERP unreachable")) {
+          return queuedResponse(body);
+        }
       }
 
       return response;
@@ -141,6 +197,8 @@ export function createOfflineFetch(isQuery: boolean) {
       if (isQuery) {
         const hit = await readCache(url, body);
         if (hit) return cachedResponse(hit);
+      } else if (await queueMutation(url, body, err?.message || "Network error")) {
+        return queuedResponse(body);
       }
       const errorMsg = err?.message || err?.response?.data?.message || "Network or Server Error";
       throw new Error(errorMsg);

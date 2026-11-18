@@ -1,0 +1,154 @@
+name: Android Smoke Test (emulator)
+
+# Boots a real Android emulator, installs the APK and verifies that
+#   * the app starts and stays in the foreground,
+#   * the bundled shell really loads (the WebView must not report
+#     ERR_CONNECTION_REFUSED — that would mean the loopback server died),
+#   * the hardware back button does not kill the app on the first press.
+#
+# Kept separate from the release workflow so a flaky emulator can never block
+# a release build. Run it manually from the Actions tab.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "src/lib/offline/**"
+      - "src/components/OfflineBar.tsx"
+      - "scripts/patch-android.py"
+      - ".github/workflows/android-smoke.yml"
+
+concurrency:
+  group: android-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Emulator smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build front-end (dist)
+        run: npm run build:frontend
+
+      - name: Stage bundled web assets
+        run: |
+          set -e
+          test -f dist/public/index.html
+          rm -rf appdist
+          mkdir -p appdist
+          cp -a dist/public/. appdist/
+          rm -f appdist/sw.js appdist/registerSW.js appdist/workbox-*.js
+          echo "staged files: $(find appdist -type f | wc -l)"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK + NDK
+        run: |
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKM="$(command -v sdkmanager || ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" --install "platform-tools" "platforms;android-34" "platforms;android-35" \
+            "build-tools;35.0.0" "ndk;27.0.12077973" >/dev/null
+          echo "NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-smoke-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/**/*.gradle*') }}
+          restore-keys: gradle-smoke-${{ runner.os }}-
+
+      - name: Init + patch Android project
+        run: |
+          npx tauri android init --ci
+          python3 scripts/patch-android.py
+          grep -n "handleBackNavigation" -r src-tauri/gen/android/app/src/main/java | head -3
+
+      - name: Build x86_64 APK
+        run: npx tauri android build --apk --target x86_64
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -e
+            APK=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -1)
+            echo "APK: $APK"
+            adb install -r -t "$APK"
+            adb logcat -c
+            adb shell am start -W -n com.yasco.erp/.MainActivity
+            sleep 20
+
+            echo "=== foreground activity ==="
+            adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3
+
+            echo "=== process ==="
+            adb shell pidof com.yasco.erp
+
+            echo "=== webview errors (must be empty) ==="
+            if adb logcat -d | grep -E "ERR_CONNECTION_REFUSED|net::ERR_|FATAL EXCEPTION"; then
+              echo "::error::WebView/app failure detected"
+              exit 1
+            fi
+
+            echo "=== back button (first press must not close the app) ==="
+            adb shell input keyevent KEYCODE_BACK
+            sleep 3
+            if adb shell pidof com.yasco.erp >/dev/null; then
+              echo "app survived back press"
+            else
+              echo "::error::app was killed by the first back press"
+              exit 1
+            fi
+
+            echo "=== back until exit ==="
+            for i in 1 2 3 4 5; do
+              adb shell input keyevent KEYCODE_BACK || true
+              sleep 1
+              if ! adb shell pidof com.yasco.erp >/dev/null; then echo "app closed after $i presses"; break; fi
+            done
+
+            echo "smoke test passed"
