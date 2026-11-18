@@ -141,7 +141,10 @@ jobs:
             --out "YASCO-ERP-${{ github.run_number }}.apk" aligned.apk
           "$BT/apksigner" verify --print-certs "YASCO-ERP-${{ github.run_number }}.apk" | head -5
           rm -f release.keystore aligned.apk
-          ls -lh "YASCO-ERP-${{ github.run_number }}.apk"
+          # Stable name for the public download URL
+          # (/releases/latest/download/YASCO-ERP.apk and yasco.tech/YASCO-ERP.apk)
+          cp "YASCO-ERP-${{ github.run_number }}.apk" YASCO-ERP.apk
+          ls -lh "YASCO-ERP-${{ github.run_number }}.apk" YASCO-ERP.apk
 
       # Actions artifact storage quota par depend nahi karta: APK seedha
       # GitHub Release me publish hota hai (private repo, login ke saath).
@@ -180,7 +183,7 @@ jobs:
             - Commit: ${{ github.sha }}
             - Offline: app shell, cached reads **and** queued writes
             - Direct link: https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk
-          files: YASCO-ERP-*.apk
+          files: YASCO-ERP.apk
           fail_on_unmatched_files: true
 
       # Mirror the APK to the VPS as well, so customers can download it from
