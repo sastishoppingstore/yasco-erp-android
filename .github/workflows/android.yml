@@ -158,10 +158,21 @@ jobs:
           rm -f release.keystore aligned.apk
           ls -lh "YASCO-ERP-${{ github.run_number }}.apk"
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      # Actions artifact storage quota par depend nahi karta: APK seedha
+      # GitHub Release me publish hota hai (private repo, login ke saath).
+      - name: Publish APK
+        uses: softprops/action-gh-release@v2
         with:
-          name: yasco-erp-apk
-          path: YASCO-ERP-*.apk
-          if-no-files-found: error
-          retention-days: 30
+          tag_name: android-build-${{ github.run_number }}
+          name: YASCO ERP Android — build ${{ github.run_number }}
+          body: |
+            Bundled offline-first Android build (arm64).
+
+            - Commit: `${{ github.sha }}`
+            - Version: 15.6.1 (versionCode 150601)
+            - Signed with the YASCO release key
+
+            Download the `.apk` below and install it on the phone
+            (allow "Install unknown apps" for the browser/file manager).
+          files: YASCO-ERP-*.apk
+          fail_on_unmatched_files: true
