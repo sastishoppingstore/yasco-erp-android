@@ -81,9 +81,31 @@ if adb logcat -d | grep -E "FATAL EXCEPTION|ERR_CONNECTION_REFUSED"; then
   exit 1
 fi
 
-echo "=== relaunch (second start must work too) ==="
-adb shell am start -W -n com.yasco.erp/.MainActivity
-sleep 8
-adb shell pidof com.yasco.erp >/dev/null || { echo "::error::app did not restart"; exit 1; }
+# A cold second start is what the customer does after the phone reboots, so
+# force-stop first: relaunching an app that is already resumed returns stale
+# state on some API levels and made this check flaky on Android 14.
+echo "=== relaunch (cold second start) ==="
+adb shell am force-stop com.yasco.erp || true
+sleep 2
+adb shell am start -W -n com.yasco.erp/.MainActivity || true
+
+PID=""
+for _ in $(seq 1 20); do
+  PID="$(adb shell pidof com.yasco.erp | tr -d '\r' || true)"
+  [ -n "$PID" ] && break
+  sleep 1
+done
+if [ -z "$PID" ]; then
+  echo "::error::app did not restart"
+  echo "=== logcat (last 80) ==="
+  adb logcat -d | tail -80 || true
+  echo "=== activities ==="
+  adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity|com.yasco" | head -10 || true
+  exit 1
+fi
+echo "restarted with pid $PID"
+
+echo "=== foreground activity after restart ==="
+adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3 || true
 
 echo "smoke test passed on Android $(adb shell getprop ro.build.version.release)"
