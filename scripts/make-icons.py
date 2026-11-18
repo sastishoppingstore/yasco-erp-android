@@ -48,8 +48,14 @@ PNG_ICONS = {
 }
 
 
+# Tauri refuses any icon that is not 8-bit RGBA, so every PNG we write gets
+# an explicit alpha channel and color type 6.
+RGBA = ["-alpha", "on", "-depth", "8", "-define", "png:color-type=6"]
+
+
 def run(*args: str) -> None:
-    subprocess.run(["convert", *args], check=True)
+    # encoding options must precede the output path, never follow it
+    subprocess.run(["convert", *args[:-1], *RGBA, args[-1]], check=True)
 
 
 def main() -> None:
