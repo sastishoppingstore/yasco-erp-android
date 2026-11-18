@@ -32,7 +32,9 @@ adb shell getprop ro.build.version.sdk || true
 
 echo "=== install ==="
 adb install -r -t "$APK"
-adb logcat -c
+# `logcat -c` fails on some older images while logd is still starting; the
+# check below does not depend on a clean buffer.
+adb logcat -c 2>/dev/null || true
 
 echo "=== launch ==="
 adb shell am start -W -n com.yasco.erp/.MainActivity

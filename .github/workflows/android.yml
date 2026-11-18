@@ -201,9 +201,16 @@ jobs:
 
           echo "=== signature ==="
           "$BT/apksigner" verify --verbose --print-certs "$APK" | tee signature.txt
-          grep -q "Verified using v1 scheme (JAR signing): true" signature.txt || { echo "::error::V1 signature missing"; exit 1; }
           grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" signature.txt || { echo "::error::V2 signature missing"; exit 1; }
           grep -q "Verified using v3 scheme (APK Signature Scheme v3): true" signature.txt || { echo "::error::V3 signature missing"; exit 1; }
+
+          # apksigner only checks the schemes that the APK's own minSdk can
+          # read, so v1 is reported as false for minSdk 24 even when the JAR
+          # signature is present. Verify it explicitly for API 23 and check
+          # that the JAR signature files really exist in the archive.
+          "$BT/apksigner" verify --min-sdk-version 23 --verbose "$APK" | tee signature-v1.txt
+          grep -q "Verified using v1 scheme (JAR signing): true" signature-v1.txt || { echo "::error::V1 signature missing"; exit 1; }
+          unzip -l "$APK" | grep -E "META-INF/(MANIFEST.MF|YASCO\.(SF|RSA))" || { echo "::error::V1 signature files missing from the APK"; exit 1; }
 
           echo "=== badging ==="
           AAPT="$BT/aapt"
