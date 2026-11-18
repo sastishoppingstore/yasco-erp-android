@@ -219,7 +219,7 @@ jobs:
           grep -q "package: name='com.yasco.erp'" badging.txt
           grep -q "sdkVersion:'24'" badging.txt || { echo "::error::minSdk is not 24"; exit 1; }
           grep -q "targetSdkVersion:'35'" badging.txt || { echo "::error::targetSdk is not 35"; exit 1; }
-          grep -q "versionCode:'$VERSION_CODE'" badging.txt || { echo "::error::unexpected versionCode"; exit 1; }
+          grep -q "versionCode='$VERSION_CODE'" badging.txt || { echo "::error::unexpected versionCode"; exit 1; }
 
           echo "=== ABIs ==="
           NATIVE=$(grep "native-code:" badging.txt)

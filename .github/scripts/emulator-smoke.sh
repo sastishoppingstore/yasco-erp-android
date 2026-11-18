@@ -53,8 +53,14 @@ if [ -z "$PID" ]; then
 fi
 
 echo "=== WebView / crash check ==="
-if adb logcat -d | grep -E "ERR_CONNECTION_REFUSED|net::ERR_|FATAL EXCEPTION"; then
-  echo "::error::WebView could not load the bundled app, or the app crashed"
+CRASH=$(adb logcat -d | grep -A40 "FATAL EXCEPTION" || true)
+if [ -n "$CRASH" ]; then
+  echo "$CRASH"
+  echo "::error::the app crashed during startup"
+  exit 1
+fi
+if adb logcat -d | grep -E "ERR_CONNECTION_REFUSED|net::ERR_"; then
+  echo "::error::WebView could not load the bundled app"
   exit 1
 fi
 

@@ -161,9 +161,11 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api }}
-          target: default
+          # google_apis images ship a working Android System WebView; the
+          # bare "default" images can be missing it, which crashes the app.
+          target: google_apis
           arch: x86_64
           profile: pixel_5
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash "${{ github.workspace }}/.github/scripts/emulator-smoke.sh"
