@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "build": {
+    "beforeBuildCommand": "",
+    "frontendDist": "../appdist-stub"
+  },
+  "bundle": {
+    "externalBin": [],
+    "resources": [],
+    "android": {
+      "minSdkVersion": 26,
+      "versionCode": 150601
+    }
+  }
+}

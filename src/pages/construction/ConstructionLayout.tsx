@@ -1,0 +1,671 @@
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { NavLink, Outlet, useNavigate, useLocation } from "react-router";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { useAuth } from "@/hooks/useAuth";
+import { useLanguage } from "@/providers/language";
+import { trpc } from "@/providers/trpc";
+import {
+  LayoutDashboard, Menu, Building2, FileText, ClipboardList, FileSpreadsheet,
+  FileEdit, Handshake, FileBarChart, ScrollText, CalendarCheck,
+  Users, ShieldCheck, HardHat, Thermometer, GraduationCap, Eye,
+  Wrench, Package, ChevronDown, ChevronRight, Briefcase, Landmark,
+  ShoppingCart, ShoppingBag, Warehouse, Boxes, ArrowLeftRight,
+  Tag, Barcode, Receipt, Banknote, CreditCard, Settings, Printer,
+  MoreVertical, LogOut, Globe, Plus,
+} from "lucide-react";
+
+const navSections = [
+  {
+    label: "Sales",
+    labelAr: "المبيعات",
+    items: [
+      { label: "Sale invoice", labelAr: "فاتورة بيع", path: "/app/construction/sahl/sales", icon: ShoppingCart },
+      { label: "Invoice history", labelAr: "سجل الفواتير", path: "/app/construction/invoice-history", icon: ScrollText },
+      { label: "Quotations", labelAr: "عروض الأسعار", path: "/app/construction/sahl/quotation", icon: FileText },
+      { label: "Sales return", labelAr: "مرتجع بيع", path: "/app/construction/sahl/sales-return", icon: FileEdit },
+      { label: "Customers", labelAr: "العملاء", path: "/app/construction/sahl/accounts", icon: Users },
+      { label: "Prices", labelAr: "الأسعار", path: "/app/construction/sahl/prices", icon: Tag },
+      { label: "Salesmen", labelAr: "مندوبو المبيعات", path: "/app/construction/sahl/salesmen", icon: Briefcase },
+    ],
+  },
+  {
+    label: "Purchases",
+    labelAr: "المشتريات",
+    items: [
+      { label: "Purchase invoice", labelAr: "فاتورة شراء", path: "/app/construction/sahl/purchase", icon: ShoppingBag },
+      { label: "Purchase return", labelAr: "مرتجع شراء", path: "/app/construction/sahl/purchase-return", icon: FileEdit },
+      { label: "Purchase analysis", labelAr: "تحليل المشتريات", path: "/app/construction/sahl/reports/purchase", icon: FileBarChart },
+      { label: "Suppliers", labelAr: "الموردون", path: "/app/construction/sahl/accounts", icon: Building2 },
+    ],
+  },
+  {
+    label: "Warehouse",
+    labelAr: "المخزن",
+    items: [
+      { label: "Goods", labelAr: "البضاعة", path: "/app/construction/sahl/products", icon: Package },
+      { label: "Stocktake", labelAr: "جرد المخزن", path: "/app/construction/sahl/vault/stocktake", icon: ClipboardList },
+      { label: "Transfer", labelAr: "تحويل بين المخازن", path: "/app/construction/sahl/vault/transfer", icon: ArrowLeftRight },
+      { label: "Item moves", labelAr: "حركة صنف", path: "/app/construction/sahl/vault/moves", icon: Boxes },
+      { label: "Barcode", labelAr: "طباعة الباركود", path: "/app/construction/sahl/vault/labels", icon: Barcode },
+      { label: "Valuation", labelAr: "تقييم المخزون", path: "/app/construction/sahl/reports/stock", icon: FileBarChart },
+    ],
+  },
+  {
+    label: "Treasury",
+    labelAr: "الخزينة",
+    items: [
+      { label: "Treasury", labelAr: "الخزائن والبنوك", path: "/app/construction/sahl/treasury", icon: Landmark },
+      { label: "Receipt", labelAr: "سند قبض", path: "/app/construction/sahl/receipts", icon: Receipt },
+      { label: "Payment", labelAr: "سند صرف", path: "/app/construction/sahl/cash", icon: Banknote },
+      { label: "Cheques", labelAr: "الشيكات", path: "/app/construction/sahl/vault/cheques", icon: CreditCard },
+      { label: "Installments", labelAr: "الأقساط", path: "/app/construction/sahl/vault/inst", icon: CalendarCheck },
+    ],
+  },
+  {
+    label: "Accounts",
+    labelAr: "الحسابات",
+    items: [
+      { label: "Accounts", labelAr: "الحسابات", path: "/app/construction/sahl/accounts", icon: Users },
+      { label: "Statement", labelAr: "كشف حساب", path: "/app/construction/sahl/accounts", icon: FileText },
+      { label: "Credit follow-up", labelAr: "متابعة الآجل", path: "/app/construction/sahl/reports/more?tab=aging", icon: FileBarChart },
+    ],
+  },
+  {
+    label: "Reports",
+    labelAr: "التقارير",
+    items: [
+      { label: "Period report", labelAr: "تقرير الفترة", path: "/app/construction/sahl/reports/period", icon: CalendarCheck },
+      { label: "Daily", labelAr: "الحركة اليومية", path: "/app/construction/sahl/reports/daily", icon: CalendarCheck },
+      { label: "Sales analysis", labelAr: "تحليل المبيعات", path: "/app/construction/sahl/reports/sales", icon: FileBarChart },
+      { label: "Purchase analysis", labelAr: "تحليل المشتريات", path: "/app/construction/sahl/reports/purchase", icon: FileBarChart },
+      { label: "VAT", labelAr: "ضريبة القيمة المضافة", path: "/app/construction/sahl/reports/more", icon: FileSpreadsheet },
+      { label: "P&L", labelAr: "الأرباح والخسائر", path: "/app/construction/sahl/reports/more?tab=pnl", icon: FileBarChart },
+      { label: "Aging", labelAr: "أعمار الديون", path: "/app/construction/sahl/reports/more?tab=aging", icon: FileBarChart },
+    ],
+  },
+  {
+    label: "Contracts",
+    labelAr: "العقود",
+    items: [
+      { label: "Contracts", labelAr: "العقود", path: "/app/construction/sahl/contracts", icon: FileText },
+      { label: "Contractors", labelAr: "المقاولون", path: "/app/construction/sahl/contractors", icon: HardHat },
+    ],
+  },
+  {
+    label: "System",
+    labelAr: "النظام",
+    items: [
+      { label: "Program settings", labelAr: "إعداد البرنامج", path: "/app/construction/sahl/settings", icon: Settings },
+      { label: "Print designer", labelAr: "تصميم نماذج الطباعة", path: "/app/construction/sahl/prints", icon: Printer },
+      { label: "ZATCA setup", labelAr: "إعداد الزكاة والضريبة", path: "/app/construction/sahl/zatca", icon: ShieldCheck },
+      { label: "Users", labelAr: "المستخدمون", path: "/app/construction/sahl/users", icon: Users },
+      { label: "Admin", labelAr: "الإدارة", path: "/app/construction/sahl/admin", icon: ShieldCheck },
+    ],
+  },
+  {
+    label: "More tools (classic)",
+    labelAr: "أدوات إضافية (كلاسيك)",
+    items: [
+      { label: "WBS", labelAr: "هيكل العمل WBS", path: "/app/construction/wbs", icon: ClipboardList },
+      { label: "BOQ", labelAr: "جدول الكميات BOQ", path: "/app/construction/boq", icon: FileSpreadsheet },
+      { label: "Contracts classic", labelAr: "العقود (كلاسيك)", path: "/app/construction/contracts", icon: FileText },
+      { label: "Variations", labelAr: "أوامر التغيير", path: "/app/construction/variations", icon: FileEdit },
+      { label: "Advance payments", labelAr: "الدفعات المقدمة", path: "/app/construction/advance-payments", icon: Handshake },
+      { label: "CVR reports", labelAr: "تقارير CVR", path: "/app/construction/cvr", icon: FileBarChart },
+      { label: "Subcontractors", labelAr: "مقاولو الباطن", path: "/app/construction/subcontractors", icon: Users },
+      { label: "Sub payments", labelAr: "مدفوعات الباطن", path: "/app/construction/sub-payments", icon: Users },
+      { label: "Warehouses", labelAr: "المخازن", path: "/app/construction/warehouses", icon: Warehouse },
+      { label: "Stock levels", labelAr: "أرصدة المخزون", path: "/app/construction/stock", icon: Boxes },
+      { label: "Products classic", labelAr: "الأصناف (كلاسيك)", path: "/app/construction/products", icon: Package },
+      { label: "Transfers", labelAr: "التحويلات", path: "/app/construction/transfers", icon: ArrowLeftRight },
+      { label: "Site materials", labelAr: "مواد الموقع", path: "/app/construction/materials", icon: Building2 },
+      { label: "SBC compliance", labelAr: "امتثال SBC", path: "/app/construction/compliance/sbc", icon: ShieldCheck },
+      { label: "SCA classification", labelAr: "تصنيف SCA", path: "/app/construction/compliance/sca", icon: ShieldCheck },
+      { label: "GTPL compliance", labelAr: "امتثال GTPL", path: "/app/construction/compliance/gtpl", icon: ShieldCheck },
+      { label: "HSE committee", labelAr: "لجنة السلامة", path: "/app/construction/hse", icon: HardHat },
+      { label: "Heat stress", labelAr: "الإجهاد الحراري", path: "/app/construction/hse/heat-stress", icon: Thermometer },
+      { label: "Safety training", labelAr: "تدريب السلامة", path: "/app/construction/hse/safety-training", icon: GraduationCap },
+      { label: "PPE issuance", labelAr: "مهمات الوقاية", path: "/app/construction/hse/ppe", icon: Eye },
+      { label: "Saudization", labelAr: "التوطين الهندسي", path: "/app/construction/saudization", icon: Briefcase },
+      { label: "Equipment schedule", labelAr: "جدول المعدات", path: "/app/construction/equipment-schedule", icon: Wrench },
+      { label: "Materials", labelAr: "المواد", path: "/app/construction/materials", icon: Package },
+      { label: "Daily reports", labelAr: "التقارير اليومية", path: "/app/construction/daily-reports", icon: CalendarCheck },
+      { label: "Decennial", labelAr: "المسؤولية العشرية", path: "/app/construction/decennial", icon: ScrollText },
+    ],
+  },
+];
+
+// Sahl top menu strip — direct links, always visible like the desktop app.
+const quickMenu = [
+  { label: "Dashboard", labelAr: "الرئيسية", path: "/app/construction" },
+  { label: "Goods", labelAr: "البضاعة", path: "/app/construction/sahl/products" },
+  { label: "Accounts", labelAr: "الحسابات", path: "/app/construction/sahl/accounts" },
+  { label: "Treasury", labelAr: "الخزينة", path: "/app/construction/sahl/treasury" },
+  { label: "Invoices", labelAr: "الفواتير", path: "/app/construction/sahl/sales" },
+  { label: "Invoice History", labelAr: "سجل الفواتير", path: "/app/construction/invoice-history" },
+  { label: "Reports", labelAr: "التقارير", path: "/app/construction/sahl/reports/sales" },
+  { label: "Warehouse", labelAr: "المخازن", path: "/app/construction/sahl/vault/stocktake" },
+];
+
+// Sahl dropdown menu bar (desktop menus, all items open real sahl routes)
+const dropMenus: { label: string; labelAr: string; items: { label: string; labelAr: string; path?: string; action?: "logout" }[] }[] = [
+  {
+    label: "System", labelAr: "البرنامج",
+    items: [
+      { label: "Program settings", labelAr: "إعداد البرنامج", path: "/app/construction/sahl/settings" },
+      { label: "Print designer", labelAr: "تصميم نماذج الطباعة", path: "/app/construction/sahl/prints" },
+      { label: "ZATCA setup", labelAr: "إعداد الزكاة والضريبة", path: "/app/construction/sahl/zatca" },
+      { label: "Backup", labelAr: "نسخ احتياطي", path: "/app/construction/sahl/admin?focus=backup" },
+      { label: "Year summary", labelAr: "ملخص السنة", path: "/app/construction/sahl/admin?focus=year" },
+      { label: "Exit", labelAr: "خروج", action: "logout" },
+    ],
+  },
+  {
+    label: "Warehouse", labelAr: "المخزن",
+    items: [
+      { label: "Products", labelAr: "الأصناف", path: "/app/construction/sahl/products" },
+      { label: "Stocktake", labelAr: "جرد المخزن", path: "/app/construction/sahl/vault/stocktake" },
+      { label: "Transfer", labelAr: "تحويل بين المخازن", path: "/app/construction/sahl/vault/transfer" },
+      { label: "Item moves", labelAr: "حركة صنف", path: "/app/construction/sahl/vault/moves" },
+      { label: "Edit prices", labelAr: "تعديل أسعار البيع", path: "/app/construction/sahl/prices" },
+      { label: "Barcode labels", labelAr: "طباعة باركود", path: "/app/construction/sahl/vault/labels" },
+    ],
+  },
+  {
+    label: "Accounts", labelAr: "الحسابات",
+    items: [
+      { label: "Customers & suppliers", labelAr: "العملاء والموردين", path: "/app/construction/sahl/accounts" },
+      { label: "Credit follow-up", labelAr: "متابعة الفواتير الآجلة", path: "/app/construction/sahl/reports/more?tab=aging" },
+      { label: "Cheques & installments", labelAr: "متابعة الشيكات والأقساط", path: "/app/construction/sahl/vault/cheques" },
+      { label: "Salesmen", labelAr: "مندوبي المبيعات", path: "/app/construction/sahl/salesmen" },
+    ],
+  },
+  {
+    label: "Treasury", labelAr: "الخزينة",
+    items: [
+      { label: "Treasury hub", labelAr: "الخزائن والبنوك", path: "/app/construction/sahl/treasury" },
+      { label: "Treasury moves", labelAr: "حركة الخزينة", path: "/app/construction/sahl/treasury?focus=moves" },
+      { label: "Payment voucher", labelAr: "سند صرف", path: "/app/construction/sahl/cash" },
+      { label: "Receipt voucher", labelAr: "سند قبض", path: "/app/construction/sahl/receipts" },
+      { label: "Expense analysis", labelAr: "تحليل المصروفات", path: "/app/construction/sahl/treasury?focus=expenses" },
+    ],
+  },
+  {
+    label: "Lists", labelAr: "القوائم",
+    items: [
+      { label: "Sales invoices", labelAr: "فواتير البيع", path: "/app/construction/sahl/sales" },
+      { label: "Purchase invoices", labelAr: "فواتير الشراء", path: "/app/construction/sahl/purchase" },
+      { label: "Sales returns", labelAr: "مرتجع بيع", path: "/app/construction/sahl/sales-return" },
+      { label: "Purchase returns", labelAr: "مرتجع شراء", path: "/app/construction/sahl/purchase-return" },
+      { label: "Quotations", labelAr: "عروض الأسعار", path: "/app/construction/sahl/quotation" },
+      { label: "Archive", labelAr: "الأرشيف", path: "/app/construction/sahl/vault/archive" },
+    ],
+  },
+  {
+    label: "Installments", labelAr: "تقسيط",
+    items: [
+      { label: "Installment plans", labelAr: "تقسيط فاتورة", path: "/app/construction/sahl/vault/inst" },
+      { label: "Cheques", labelAr: "الشيكات", path: "/app/construction/sahl/vault/cheques" },
+    ],
+  },
+  {
+    label: "Reports", labelAr: "تقارير",
+    items: [
+      { label: "Period report", labelAr: "تقرير الفترة", path: "/app/construction/sahl/reports/period" },
+      { label: "Daily movement", labelAr: "تقرير الحركة اليومية", path: "/app/construction/sahl/reports/daily" },
+      { label: "Sales analysis", labelAr: "تحليل المبيعات", path: "/app/construction/sahl/reports/sales" },
+      { label: "Purchase analysis", labelAr: "تحليل المشتريات", path: "/app/construction/sahl/reports/purchase" },
+      { label: "Item profits", labelAr: "أرباح الأصناف", path: "/app/construction/sahl/reports/stock" },
+      { label: "VAT report", labelAr: "كشف ضريبة القيمة المضافة", path: "/app/construction/sahl/reports/more" },
+    ],
+  },
+  {
+    label: "Contracts", labelAr: "العقود",
+    items: [
+      { label: "Contracts", labelAr: "العقود", path: "/app/construction/sahl/contracts" },
+      { label: "Contractors", labelAr: "المقاولون", path: "/app/construction/sahl/contractors" },
+    ],
+  },
+  {
+    label: "Help", labelAr: "مساعدة",
+    items: [
+      { label: "Quick tour", labelAr: "جولة سريعة", path: "/app/construction?tour=1" },
+      { label: "Support", labelAr: "الدعم الفني", path: "/app/construction?support=1" },
+    ],
+  },
+  {
+    label: "Profile", labelAr: "حسابي",
+    items: [
+      { label: "Admin & password", labelAr: "الإدارة وكلمة السر", path: "/app/construction/sahl/admin" },
+      { label: "Users", labelAr: "المستخدمون", path: "/app/construction/sahl/users" },
+    ],
+  },
+];
+
+function DropMenu({ m, rtl, onExit }: { m: (typeof dropMenus)[number]; rtl: boolean; onExit: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ left: 0, top: 0 });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | null>(null);
+  const navigate = useNavigate();
+
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  // The menu strip scrolls horizontally, so an absolutely-positioned dropdown
+  // would be clipped by its overflow. Render it in a portal with fixed
+  // coordinates instead — every menu is always visible and clickable.
+  const openNow = () => {
+    cancelClose();
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) {
+      const width = 190;
+      const left = Math.max(4, Math.min(rtl ? r.right - width : r.left, window.innerWidth - width - 4));
+      setPos({ left, top: r.bottom });
+    }
+    setOpen(true);
+  };
+  const closeSoon = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setOpen(false), 180);
+  };
+  useEffect(() => cancelClose, []);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    window.addEventListener("scroll", close, true);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" onMouseEnter={openNow} onMouseLeave={closeSoon}>
+      <button ref={btnRef} onClick={openNow}
+        className="whitespace-nowrap px-2.5 py-1.5 text-[12px] font-semibold text-slate-700 hover:bg-slate-200">
+        {rtl ? m.labelAr : m.label}
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          style={{ position: "fixed", left: pos.left, top: pos.top, width: 190, zIndex: 1000 }}
+          className="border border-[#888] bg-white py-1 shadow-lg"
+          onMouseEnter={openNow} onMouseLeave={closeSoon}>
+          {m.items.map((it) => (
+            <button key={(it.path ?? "") + it.label}
+              onClick={() => {
+                setOpen(false);
+                if (it.action === "logout") onExit();
+                else if (it.path) navigate(it.path);
+              }}
+              className="block w-full px-3 py-1.5 text-start text-[12px] text-black hover:bg-[#e8f5e9]">
+              {rtl ? it.labelAr : it.label}
+            </button>
+          ))}
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
+function DrawerNav({ onNavigate }: { onNavigate: () => void }) {
+  const { language } = useLanguage();
+  const rtl = language === "ar";
+  // Only the working Sahl groups start open; the classic tools stay folded.
+  const [expanded, setExpanded] = useState<string[]>(["Sales", "Reports", "Contracts"]);
+
+  const toggle = (label: string) => {
+    setExpanded(prev => prev.includes(label) ? prev.filter(l => l !== label) : [...prev, label]);
+  };
+
+  return (
+    <div className="flex h-[100dvh] flex-col gap-1 py-3 text-white">
+      <NavLink to="/app/construction" end onClick={onNavigate} className="mx-3 mb-2 shrink-0">
+        <div className="flex items-center gap-2 rounded-lg bg-[#2fae4e] px-3 py-2 text-sm font-bold text-white">
+          <Building2 className="h-4 w-4" />
+          {rtl ? "المقاولات" : "Construction"}
+        </div>
+      </NavLink>
+      {/* Native scroll (min-h-0 + overflow-y-auto) — always scrolls, any screen height */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-3">
+        <nav className="flex flex-col gap-1 pb-4">
+          <NavLink
+            to="/app/construction"
+            end
+            onClick={onNavigate}
+            className={({ isActive }) => cn(
+              "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              isActive ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+            )}
+          >
+            <LayoutDashboard className="h-4 w-4" />
+            {rtl ? "الرئيسية" : "Dashboard"}
+          </NavLink>
+          {navSections.map(section => (
+            <div key={section.label}>
+              <button
+                onClick={() => toggle(section.label)}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs font-semibold uppercase tracking-wider text-white/50 hover:text-white"
+              >
+                {expanded.includes(section.label) ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                {rtl ? section.labelAr : section.label}
+              </button>
+              {expanded.includes(section.label) && section.items.map(item => (
+                <NavLink
+                  key={item.path + item.label}
+                  to={item.path}
+                  onClick={onNavigate}
+                  className={({ isActive }) => cn(
+                    "flex items-center gap-2 rounded-md px-3 py-2 pl-8 text-sm transition-colors",
+                    isActive ? "bg-white/15 font-medium text-white" : "text-white/70 hover:bg-white/10 hover:text-white"
+                  )}
+                >
+                  <item.icon className="h-4 w-4" />
+                  {rtl ? item.labelAr : item.label}
+                </NavLink>
+              ))}
+            </div>
+          ))}
+        </nav>
+      </div>
+    </div>
+  );
+}
+
+// Open-tabs bar: permanent إبدأ مع YASCO root + closable visited screens.
+// Txn drafts persist in localStorage per document kind, so switching tabs
+// keeps uncommitted lines (see SahlTxn draft effect).
+const TAB_TITLES: [string, string, string][] = [
+  ["/app/construction", "إبدأ مع YASCO", "Start"],
+  ["/app/construction/invoice-history", "سجل الفواتير", "Invoice History"],
+  ["/app/construction/sahl/sales-return", "مرتجع بيع", "Sales Return"],
+  ["/app/construction/sahl/purchase-return", "مرتجع شراء", "Purchase Return"],
+  ["/app/construction/sahl/sales", "بيع", "Sale"],
+  ["/app/construction/sahl/purchase", "شراء", "Purchase"],
+  ["/app/construction/sahl/products", "البضاعة", "Goods"],
+  ["/app/construction/sahl/accounts", "الحسابات", "Accounts"],
+  ["/app/construction/sahl/settings", "إعداد البرنامج", "Setup"],
+  ["/app/construction/sahl/prints", "الطباعة", "Prints"],
+  ["/app/construction/sahl/contracts", "العقود", "Contracts"],
+  ["/app/construction/sahl/contractors", "المقاولون", "Contractors"],
+  ["/app/construction/sahl/reports/period", "تقرير الفترة", "Period Report"],
+  ["/app/construction/sahl/zatca", "إعداد الزكاة", "ZATCA Setup"],
+];
+function tabTitle(path: string, rtl: boolean) {
+  const hit = TAB_TITLES.find(([p]) => path === p || (p !== "/app/construction" && path.startsWith(p)));
+  if (hit) return rtl ? hit[1] : hit[2];
+  const seg = path.split("/").filter(Boolean).pop() ?? "";
+  return decodeURIComponent(seg).slice(0, 18) || (rtl ? "شاشة" : "Screen");
+}
+
+function SahlTabs({ rtl }: { rtl: boolean }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [tabs, setTabs] = useState<string[]>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem("sahl-tabs") || '["/app/construction"]');
+    } catch {
+      return ["/app/construction"];
+    }
+  });
+  useEffect(() => {
+    const p = location.pathname;
+    if (!p.startsWith("/app/construction")) return;
+    setTabs((prev) => {
+      if (prev.includes(p)) return prev;
+      const next = [...prev.slice(-7), p].filter((x, i, a) => a.indexOf(x) === i);
+      try { sessionStorage.setItem("sahl-tabs", JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, [location.pathname]);
+  const close = (p: string) => {
+    setTabs((prev) => {
+      const next = prev.filter((x) => x !== p);
+      const final = next.length ? next : ["/app/construction"];
+      try { sessionStorage.setItem("sahl-tabs", JSON.stringify(final)); } catch { /* ignore */ }
+      if (location.pathname === p) navigate(final[final.length - 1]);
+      return final;
+    });
+  };
+  if (tabs.length <= 1) return null;
+  return (
+    <div className="flex items-stretch gap-0.5 overflow-x-auto border-b border-[#999] bg-[#e8e8e8] px-1 pt-1">
+      {tabs.map((p) => {
+        const active = location.pathname === p;
+        const root = p === "/app/construction";
+        return (
+          <span key={p}
+            className={`flex shrink-0 items-center gap-1 border border-b-0 border-[#999] px-2 py-1 text-[12px] ${active ? "bg-white font-bold text-black" : "bg-[#d5d5d5] text-[#333] hover:bg-white"}`}>
+            <button onClick={() => navigate(p)}>{tabTitle(p, rtl)}</button>
+            {!root && (
+              <button onClick={() => close(p)} title="X" className="px-0.5 text-[11px] text-[#888] hover:text-red-700">X</button>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function CashBalance({ rtl }: { rtl: boolean }) {  const bal = trpc.cashbox.currentBalance.useQuery(undefined, {
+    refetchInterval: 60000,
+    retry: false,
+  });
+  const v = Number((bal.data as any)?.balance ?? 0);
+  return (
+    <span className="whitespace-nowrap tabular-nums">
+      {rtl ? "الخزينة" : "Cash"}: <b className="text-white">{v.toFixed(2)}</b>
+    </span>
+  );
+}
+
+// Header "more" menu (the three-dot button in the black title bar).
+// Every entry opens a Sahl screen — no classic engineering pages here.
+const headerMenuItems = [
+  { label: "New invoice", labelAr: "فاتورة جديدة", path: "/app/construction/sahl/sales" },
+  { label: "Invoice history", labelAr: "سجل الفواتير", path: "/app/construction/invoice-history" },
+  { label: "Period report", labelAr: "تقرير الفترة", path: "/app/construction/sahl/reports/period" },
+  { label: "Contractors", labelAr: "المقاولون", path: "/app/construction/sahl/contractors" },
+  { label: "ZATCA setup", labelAr: "إعداد الزكاة والضريبة", path: "/app/construction/sahl/zatca" },
+  { label: "Program settings", labelAr: "إعداد البرنامج", path: "/app/construction/sahl/settings" },
+];
+
+function HeaderMenu({ rtl }: { rtl: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setOpen((o) => !o)}
+        className="shrink-0 text-white/85 hover:bg-white/10 hover:text-white"
+        title={rtl ? "المزيد" : "More"}
+        aria-label={rtl ? "المزيد" : "More"}
+        aria-expanded={open}
+      >
+        <MoreVertical className="h-4 w-4" />
+        <span className="sr-only">{rtl ? "المزيد" : "More"}</span>
+      </Button>
+      {open && (
+        <div
+          className={cn(
+            "absolute top-full z-50 mt-1 w-56 border border-[#999] bg-white py-1 text-start shadow-lg",
+            rtl ? "left-0" : "right-0"
+          )}
+        >
+          {headerMenuItems.map((it) => (
+            <button
+              key={it.path + it.label}
+              onClick={() => {
+                setOpen(false);
+                navigate(it.path);
+              }}
+              className="block w-full px-3 py-1.5 text-start text-[12px] text-black hover:bg-[#e8f5e9]"
+            >
+              {rtl ? it.labelAr : it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ConstructionLayout() {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Standalone Sahl shell: expired sessions bounce to login, and the
+  // login landing sends construction tenants straight back here.
+  const { user, logout } = useAuth({ redirectOnUnauthenticated: true });
+  const { language, setLang } = useLanguage();
+  const navigate = useNavigate();
+  const rtl = language === "ar";
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const userName = user?.name || (user as any)?.email || "";
+
+  return (
+    <div
+      className="flex min-h-screen flex-col bg-[#141414] text-white"
+      dir={rtl ? "rtl" : "ltr"}
+      style={{
+        backgroundImage: "radial-gradient(rgba(255,255,255,0.05) 1px, transparent 1px)",
+        backgroundSize: "5px 5px",
+      }}
+    >
+      {/* ===== Sahl title bar ===== */}
+      <header className="flex items-center gap-2 bg-[#0d0d0d] px-3 py-2">
+        <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+          <SheetTrigger asChild>
+            <Button variant="ghost" size="icon" className="shrink-0 text-white hover:bg-white/10 hover:text-white" title={rtl ? "القائمة" : "Menu"}>
+              <Menu className="h-5 w-5" />
+            </Button>
+          </SheetTrigger>
+          <SheetContent side={rtl ? "right" : "left"} className="w-72 border-white/10 bg-[#1a1a1a] p-0">
+            <DrawerNav onNavigate={() => setDrawerOpen(false)} />
+          </SheetContent>
+        </Sheet>
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap text-xs text-white/85">
+          <span className="font-bold">YASCO ERP</span>
+          <span className="text-white/30">||</span>
+          <span className="truncate">{rtl ? "المقاولات" : "Construction"}</span>
+          <span className="text-white/30">||</span>
+          <span className="truncate">{rtl ? "المستخدم" : "User"}: {userName}</span>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setLang(language === "en" ? "ar" : "en")}
+          className="shrink-0 gap-1 text-white/85 hover:bg-white/10 hover:text-white"
+        >
+          <Globe className="h-4 w-4" />
+          <span className="text-xs font-bold">{rtl ? "EN" : "عربي"}</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => logout()}
+          className="shrink-0 gap-1 text-white/85 hover:bg-rose-500/25 hover:text-white"
+          title={rtl ? "تسجيل الخروج" : "Logout"}
+        >
+          <LogOut className="h-4 w-4" />
+          <span className="hidden text-xs font-bold md:inline">{rtl ? "خروج" : "Logout"}</span>
+        </Button>
+        <HeaderMenu rtl={rtl} />
+      </header>
+
+      {/* ===== Sahl dropdown menu bar (desktop menus) ===== */}
+      <div className="flex flex-wrap items-stretch border-b border-[#999] bg-white">
+        {dropMenus.map((m) => (
+          <DropMenu key={m.label} m={m} rtl={rtl}
+            onExit={() => {
+              const ok = window.confirm(rtl ? "هل تريد الخروج من ياسكو؟" : "Exit YASCO and sign out?");
+              if (ok) logout();
+            }} />
+        ))}
+      </div>
+
+      {/* ===== Sahl menu strip ===== */}
+      <div className="flex items-stretch gap-0 overflow-x-auto bg-[#f4f4f4] text-slate-800 shadow">
+        <div className="flex flex-1 items-stretch">
+          {quickMenu.map((m) => (
+            <NavLink
+              key={m.path + m.label}
+              to={m.path}
+              end={m.path === "/app/construction"}
+              className={({ isActive }) => cn(
+                "flex items-center whitespace-nowrap border-e border-slate-300/70 px-3 py-2 text-[13px] font-semibold transition-colors lg:px-4",
+                isActive ? "bg-[#2fae4e] text-white" : "text-slate-700 hover:bg-slate-200"
+              )}
+            >
+              {rtl ? m.labelAr : m.label}
+            </NavLink>
+          ))}
+        </div>
+        <button
+          onClick={() => navigate("/app/construction/sahl/sales")}
+          className="flex shrink-0 items-center gap-1 bg-[#2fae4e] px-3 py-2 text-[13px] font-bold text-white hover:brightness-110 lg:px-5"
+        >
+          <Plus className="h-4 w-4" />
+          {rtl ? "فاتورة جديدة" : "New Invoice"}
+        </button>
+      </div>
+
+      {/* ===== Open-tabs bar (إبدأ مع YASCO root + closable screens) ===== */}
+      <SahlTabs rtl={rtl} />
+
+      {/* ===== Full-screen content (no permanent sidebar — Sahl style) ===== */}
+      <main className="min-w-0 flex-1 p-2 pb-24 text-slate-900 lg:p-3 lg:pb-24">
+        <Outlet />
+      </main>
+
+      {/* ===== Sahl status bar ===== */}
+      <footer className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 bg-[#0d0d0d] px-3 py-1.5 text-xs text-white/85">
+        <span className="font-mono font-bold tabular-nums">
+          {now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+        </span>
+        <span className="text-white/30">|</span>
+        <span className="tabular-nums">{now.toLocaleDateString("en-GB")}</span>
+        <span className="text-white/30">|</span>
+        <CashBalance rtl={rtl} />
+        <div className="flex-1" />
+        <span className="hidden truncate sm:inline">{rtl ? "المقاولات للمقاولات وإدارة المشاريع" : "Construction & project management"}</span>
+        <span className="text-white/30">|</span>
+        <span className="max-w-28 truncate font-semibold">{userName}</span>
+        <span className="text-white/30">|</span>
+        <span className="text-white/50">Powered by YASCO</span>
+      </footer>
+    </div>
+  );
+}

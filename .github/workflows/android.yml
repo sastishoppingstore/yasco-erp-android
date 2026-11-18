@@ -1,0 +1,157 @@
+name: Android Build
+
+# Builds a signed YASCO ERP Android APK from the bundled front-end.
+# The live website / live ERP server is never contacted by this workflow:
+# it only reads the repository, builds assets and produces an APK artifact.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - "**.md"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: Build front-end (dist)
+        run: npm run build:frontend
+
+      - name: Stage bundled web assets
+        run: |
+          set -e
+          test -f dist/public/index.html
+          rm -rf appdist
+          mkdir -p appdist
+          cp -a dist/public/. appdist/
+          # The app ships its own copy of the assets; a service worker would
+          # keep serving an older bundle after an APK update.
+          rm -f appdist/sw.js appdist/registerSW.js appdist/workbox-*.js
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path('appdist/index.html')
+          html = p.read_text(encoding='utf-8')
+          html = re.sub(r'<script[^>]*(?:registerSW|serviceWorker)[^>]*>\s*</script>', '', html, flags=re.I)
+          p.write_text(html, encoding='utf-8')
+          PY
+          echo "staged files: $(find appdist -type f | wc -l), size: $(du -sh appdist | cut -f1)"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK + SDK packages
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "platforms;android-35" \
+            "build-tools;34.0.0" \
+            "build-tools;35.0.0" \
+            "ndk;27.0.12077973" >/dev/null
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/**/*.gradle*') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Init Android project
+        run: npx tauri android init --ci
+
+      - name: Allow loopback HTTP
+        run: |
+          set -e
+          M=src-tauri/gen/android/app/src/main/AndroidManifest.xml
+          python3 - "$M" <<'PY'
+          import re, sys
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8').read()
+          if 'usesCleartextTraffic' not in s:
+              s = re.sub(r'<application\b', '<application android:usesCleartextTraffic="true"', s, count=1)
+          # The ERP is served by the app's own loopback server.
+          if 'android.permission.INTERNET' not in s:
+              s = s.replace('<application', '<uses-permission android:name="android.permission.INTERNET"/>\n    <application', 1)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('manifest patched')
+          PY
+          grep -o 'usesCleartextTraffic="[a-z]*"' "$M" || true
+
+      - name: Build APK (arm64)
+        run: npx tauri android build --apk --target aarch64
+
+      - name: Sign APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+          test -n "$KEYSTORE_BASE64" || { echo "Missing ANDROID_KEYSTORE_BASE64 secret"; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          RAW=$(find src-tauri/gen/android/app/build/outputs/apk -name "*-unsigned.apk" | head -1)
+          test -n "$RAW" || { echo "No unsigned APK produced"; find src-tauri/gen/android/app/build/outputs/apk -type f; exit 1; }
+          echo "unsigned: $RAW"
+          "$BT/zipalign" -p -f 4 "$RAW" aligned.apk
+          "$BT/apksigner" sign \
+            --ks release.keystore \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" \
+            --key-pass "pass:$KEY_PASSWORD" \
+            --out "YASCO-ERP-${{ github.run_number }}.apk" aligned.apk
+          "$BT/apksigner" verify --print-certs "YASCO-ERP-${{ github.run_number }}.apk" | head -5
+          rm -f release.keystore aligned.apk
+          ls -lh "YASCO-ERP-${{ github.run_number }}.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: yasco-erp-apk
+          path: YASCO-ERP-*.apk
+          if-no-files-found: error
+          retention-days: 30

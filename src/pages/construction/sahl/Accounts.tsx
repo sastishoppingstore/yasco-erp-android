@@ -1,0 +1,309 @@
+import { useState } from "react";
+import { useNavigate } from "react-router";
+import { trpc } from "@/providers/trpc";
+import { useLanguage } from "@/providers/language";
+import {
+  GreenDialog, SahlField, SahlGrid, inputCls, btnCls, btnGreenCls,
+} from "./ui";
+
+// SCR-005: green account dialog over workspace. Customers via sales.*,
+// suppliers via purchase.*. Statement = invoices + payments (real ledgers).
+export default function SahlAccounts() {
+  const { language } = useLanguage();
+  const rtl = language === "ar";
+  const navigate = useNavigate();
+  const utils = trpc.useUtils();
+  const [kind, setKind] = useState<"customer" | "supplier">("customer");
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(-1);
+  const [err, setErr] = useState("");
+  const [remindOnly, setRemindOnly] = useState(false);
+  const [itemized, setItemized] = useState(false);
+  const [reminderDate, setReminderDate] = useState("");
+  const [f, setF] = useState<any>({
+    name: "", nameAr: "", phone: "", email: "", address: "", addressAr: "",
+    taxNumber: "", crNumber: "", openingBalance: "", openingBalanceDate: "", openDir: "debit", notes: "",
+  });
+
+  const { data: customers } = trpc.sales.customerList.useQuery(q && kind === "customer" ? { search: q } : undefined);
+  const { data: suppliers } = trpc.purchase.supplierList.useQuery(q && kind === "supplier" ? { search: q } : undefined);
+  const list = (kind === "customer" ? customers : suppliers) ?? [];
+  const { data: dueFlags } = trpc.sahl.flagDue.useQuery(undefined, { enabled: remindOnly });
+  const dueIds = new Set(((dueFlags ?? []) as any[]).filter((x: any) => x.accountKind === kind).map((x: any) => x.accountId));
+  const shownList = remindOnly ? list.filter((r: any) => dueIds.has(r.id)) : list;
+  const selRow: any = sel >= 0 ? list[sel] : null;
+
+  const { data: custInvoices } = trpc.sales.invoiceList.useQuery(
+    selRow && kind === "customer" ? { customerId: selRow.id } : undefined,
+    { enabled: !!selRow && kind === "customer" }
+  );
+  const { data: custPayments } = trpc.sales.paymentList.useQuery(
+    selRow && kind === "customer" ? { customerId: selRow.id } : undefined,
+    { enabled: !!selRow && kind === "customer" }
+  );
+
+  const refresh = () => {
+    utils.sales.customerList.invalidate();
+    utils.purchase.supplierList.invalidate();
+    utils.sales.invoiceList.invalidate();
+    utils.sales.paymentList.invalidate();
+    utils.sahl.flagGet.invalidate();
+  };
+  const { data: allCustomers } = trpc.sales.customerList.useQuery();
+  const { data: allSuppliers } = trpc.purchase.supplierList.useQuery();
+  const { data: flag } = trpc.sahl.flagGet.useQuery(
+    selRow ? { accountKind: kind, accountId: selRow.id } : { accountKind: kind, accountId: 0 },
+    { enabled: !!selRow });
+  const { data: itemizedRows } = trpc.sahl.itemizedStatement.useQuery(
+    selRow && kind === "customer" && itemized ? { customerId: selRow.id, limit: 200 } : { customerId: 0 },
+    { enabled: !!selRow && kind === "customer" && itemized });
+  const flagSave = trpc.sahl.flagSet.useMutation({
+    onSuccess: () => { setReminderDate(""); utils.sahl.flagGet.invalidate(); },
+    onError: (e) => setErr(e.message),
+  });
+
+  const totalDr = (allCustomers ?? []).reduce((a: number, c: any) => a + Math.max(0, Number(c.openingBalance || 0)), 0);
+  const totalCr = (allSuppliers ?? []).reduce((a: number, s: any) => a + Math.abs(Math.min(0, Number(s.openingBalance || 0))), 0)
+    + (allCustomers ?? []).reduce((a: number, c: any) => a + Math.abs(Math.min(0, Number(c.openingBalance || 0))), 0);
+  const createCustomer = trpc.sales.customerCreate.useMutation({
+    onSuccess: () => { reset(); refresh(); }, onError: (e) => setErr(e.message),
+  });
+  const updateCustomer = trpc.sales.customerUpdate.useMutation({
+    onSuccess: () => refresh(), onError: (e) => setErr(e.message),
+  });
+  const createSupplier = trpc.purchase.supplierCreate.useMutation({
+    onSuccess: () => { reset(); refresh(); }, onError: (e) => setErr(e.message),
+  });
+  const updateSupplier = trpc.purchase.supplierUpdate.useMutation({
+    onSuccess: () => refresh(), onError: (e) => setErr(e.message),
+  });
+
+  const reset = () => {
+    setF({
+      name: "", nameAr: "", phone: "", email: "", address: "", addressAr: "",
+      taxNumber: "", crNumber: "", openingBalance: "", openingBalanceDate: "", openDir: "debit", notes: "",
+    });
+    setSel(-1);
+    setErr("");
+  };
+
+  const pick = (i: number) => {
+    const r: any = list[i];
+    setSel(i);
+    setErr("");
+    const ob = Number(r.openingBalance ?? 0);
+    setF({
+      name: r.name ?? "", nameAr: r.nameAr ?? "", phone: r.phone ?? r.mobile ?? "",
+      email: r.email ?? "", address: r.address ?? "", addressAr: r.addressAr ?? "",
+      taxNumber: r.taxNumber ?? r.vatNumber ?? "",
+      // CR lives in cr_number and/or commercial_registration depending on how
+      // the row was written — read both so the field is never empty.
+      crNumber: r.crNumber ?? r.commercialRegistration ?? "",
+      openingBalance: ob === 0 ? "" : String(Math.abs(ob)),
+      openingBalanceDate: r.openingBalanceDate ?? "",
+      openDir: ob < 0 ? "credit" : "debit",
+      notes: r.notes ?? "",
+    });
+  };
+
+  const signedOpening = () => {
+    if (f.openingBalance === "") return undefined;
+    const v = Math.abs(Number(f.openingBalance) || 0);
+    return String(f.openDir === "credit" ? -v : v);
+  };
+
+  const save = () => {
+    setErr("");
+    if (!f.name?.trim()) { setErr(rtl ? "اسم الحساب مطلوب" : "Account name required"); return; }
+    if (kind === "customer") {
+      const p = {
+        name: f.name.trim(), nameAr: f.nameAr || undefined, phone: f.phone || undefined,
+        email: f.email || undefined, address: f.address || undefined, addressAr: f.addressAr || undefined,
+        taxNumber: f.taxNumber || undefined,
+        // sent as an explicit value (empty clears it) so the CR is never lost
+        crNumber: (f.crNumber ?? "").trim() || null,
+        openingBalance: signedOpening(),
+        openingBalanceDate: f.openingBalanceDate || undefined,
+        notes: f.notes || undefined,
+      };
+      if (selRow) updateCustomer.mutate({ id: selRow.id, ...p } as any);
+      else createCustomer.mutate(p as any);
+    } else {
+      const p = {
+        name: f.name.trim(), nameAr: f.nameAr || undefined, phone: f.phone || undefined,
+        email: f.email || undefined, address: f.address || undefined,
+        taxNumber: f.taxNumber || undefined,
+        crNumber: (f.crNumber ?? "").trim() || null,
+        notes: f.notes || undefined,
+      };
+      if (selRow) updateSupplier.mutate({ id: selRow.id, ...p } as any);
+      else createSupplier.mutate(p as any);
+    }
+  };
+
+  const deactivate = () => {
+    if (kind !== "customer" || !selRow) return;
+    if (!confirm(rtl ? "إيقاف الحساب؟ (لا حذف مع وجود حركات)" : "Deactivate account? (no delete with transactions)")) return;
+    updateCustomer.mutate({ id: selRow.id, isActive: false });
+  };
+
+  const balance = kind === "customer" && selRow
+    ? Number(selRow.openingBalance || 0) +
+      (custInvoices ?? []).reduce((a: number, i: any) => a + Number(i.balanceDue || 0), 0)
+    : null;
+
+  return (
+    <div className="min-h-full bg-black p-2 text-[12px] text-white">
+      <div className="mb-2 flex flex-wrap items-center gap-2 border border-[#333] bg-[#111] p-1.5">
+        <b className="text-[13px]">{rtl ? "إدخال العملاء والموردين" : "Customers & suppliers"}</b>
+        <button className={btnCls} onClick={() => { setKind("customer"); reset(); }}
+          style={kind === "customer" ? { background: "#2fae4e", color: "#fff" } : undefined}>
+          {rtl ? "عميل" : "Customer"}
+        </button>
+        <button className={btnCls} onClick={() => { setKind("supplier"); reset(); }}
+          style={kind === "supplier" ? { background: "#2fae4e", color: "#fff" } : undefined}>
+          {rtl ? "مورد" : "Supplier"}
+        </button>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={rtl ? "بحث" : "Search"}
+          className={inputCls} style={{ width: 200 }} />
+        <button className={btnCls} onClick={reset}>{rtl ? "جديد" : "New"}</button>
+        <span className="border border-[#555] px-1 text-[11px] text-white/80">
+          {rtl ? "مدينة" : "Dr"}: <b className="text-white">{totalDr.toFixed(0)}</b> ·
+          {rtl ? " دائنة" : " Cr"}: <b className="text-white">{totalCr.toFixed(0)}</b>
+        </span>
+        <label className="flex items-center gap-1 text-[11px] text-white/70">
+          <input type="checkbox" checked={remindOnly} onChange={(e) => setRemindOnly(e.target.checked)} />
+          {rtl ? "تحت المراجعة فقط" : "Due review only"}
+        </label>
+        {balance !== null && (
+          <span className="text-[11px] text-white/70">{rtl ? "الرصيد" : "Balance"}: <b className="text-white">{balance.toFixed(2)}</b></span>
+        )}
+      </div>
+
+      <SahlGrid
+        columns={[rtl ? "الاسم" : "Name", rtl ? "الهاتف" : "Phone", rtl ? "الضريبي" : "Tax No"]}
+        rows={shownList.map((r: any) => [r.nameAr || r.name, r.phone ?? r.mobile ?? "", r.taxNumber ?? r.vatNumber ?? ""])}
+        onSelect={(i) => {
+          const r = shownList[i];
+          pick(list.indexOf(r));
+        }}
+        selected={selRow ? shownList.indexOf(selRow) : -1}
+        emptyText={rtl ? "لا توجد حسابات" : "No accounts"}
+      />
+
+      <div className="mt-2">
+        <GreenDialog
+          title={kind === "customer"
+            ? rtl ? "بطاقة عميل" : "Customer card"
+            : rtl ? "بطاقة مورد" : "Supplier card"}
+          footer={
+            <>
+              <button className={btnCls} onClick={reset}>{rtl ? "إلغاء" : "Cancel"}</button>
+              {kind === "customer" && selRow && (
+                <button className={btnCls} onClick={deactivate}>{rtl ? "إيقاف" : "Deactivate"}</button>
+              )}
+              <button className={btnGreenCls} style={{ background: "#0a5c2a" }}
+                disabled={createCustomer.isPending || updateCustomer.isPending || createSupplier.isPending || updateSupplier.isPending}
+                onClick={save}>
+                {rtl ? "حفظ" : "Save"}
+              </button>
+            </>
+          }
+        >
+          {err && <div className="mb-2 border border-red-800 bg-white px-2 py-1 text-[12px] text-red-700">{err}</div>}
+          <div className="grid gap-x-4 lg:grid-cols-2">
+            <div className="bg-white/10 p-2">
+              <SahlField label={rtl ? "الاسم" : "Name"}>
+                <input className={inputCls} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+              </SahlField>
+              <SahlField label={rtl ? "الاسم عربي" : "Arabic"}>
+                <input className={inputCls} value={f.nameAr} onChange={(e) => setF({ ...f, nameAr: e.target.value })} />
+              </SahlField>
+              <SahlField label={rtl ? "الهاتف" : "Phone"}>
+                <input className={inputCls} value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} />
+              </SahlField>
+              <SahlField label={rtl ? "البريد" : "Email"}>
+                <input className={inputCls} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+              </SahlField>
+            </div>
+            <div className="bg-white/10 p-2">
+              <SahlField label={rtl ? "العنوان" : "Address"}>
+                <input className={inputCls} value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} />
+              </SahlField>
+              <SahlField label={rtl ? "الرقم الضريبي" : "Tax No"}>
+                <input className={inputCls} value={f.taxNumber} onChange={(e) => setF({ ...f, taxNumber: e.target.value })} />
+              </SahlField>
+              <SahlField label={rtl ? "السجل التجاري" : "CR"}>
+                <input className={inputCls} value={f.crNumber} onChange={(e) => setF({ ...f, crNumber: e.target.value })} />
+              </SahlField>
+              <SahlField label={rtl ? "الرصيد الافتتاحي" : "Opening"}>
+                <span className="flex gap-1">
+                  <input type="number" min="0" className={inputCls} value={f.openingBalance} onChange={(e) => setF({ ...f, openingBalance: e.target.value })} />
+                  <select className={inputCls} style={{ width: 90 }} value={f.openDir} onChange={(e) => setF({ ...f, openDir: e.target.value })}>
+                    <option value="debit">{rtl ? "مدين" : "Dr"}</option>
+                    <option value="credit">{rtl ? "دائن" : "Cr"}</option>
+                  </select>
+                  <input type="date" className={inputCls} style={{ width: 140 }} value={f.openingBalanceDate} onChange={(e) => setF({ ...f, openingBalanceDate: e.target.value })} />
+                </span>
+              </SahlField>
+            </div>
+          </div>
+          <div className="mt-2 bg-white/10 p-2">
+            <SahlField label={rtl ? "ملاحظات" : "Notes"}>
+              <input className={inputCls} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} />
+            </SahlField>
+          </div>
+          {kind === "customer" && selRow && (
+            <div className="mt-2 bg-white p-2 text-[12px] text-black">
+              <div className="mb-1 flex flex-wrap items-center gap-1">
+                <b>{rtl ? "كشف حساب" : "Statement"} — {(custInvoices ?? []).length} {rtl ? "فواتير" : "invoices"} · {(custPayments ?? []).length} {rtl ? "مدفوعات" : "payments"}</b>
+                <button className={btnCls} onClick={() => setItemized((v) => !v)}>
+                  {itemized ? (rtl ? "إجمالي" : "Summary") : (rtl ? "بالأصناف" : "Itemized")}
+                </button>
+                <button className={btnCls} onClick={() => navigate(`/app/construction/sahl/receipts?accountId=${selRow.id}`)}>
+                  {rtl ? "قبض" : "Receipt"}
+                </button>
+              </div>
+              {itemized ? (
+                <div className="mt-1 max-h-[140px] overflow-auto border border-[#888]">
+                  {((itemizedRows ?? []) as any[]).map((r: any, i: number) => (
+                    <div key={i} className="flex justify-between border-b border-[#eee] px-1 py-0.5">
+                      <span>{String(r.date ?? "").slice(0, 10)} · {r.invoiceNumber} · {r.productName ?? ""}</span>
+                      <span>{Number(r.quantity || 0)} × {Number(r.unitPrice || 0)} = {Number(r.totalAmount || 0).toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-1 max-h-[120px] overflow-auto border border-[#888]">
+                  {(custInvoices ?? []).slice(0, 20).map((i: any) => (
+                    <div key={i.id} className="flex justify-between border-b border-[#eee] px-1 py-0.5">
+                      <span>{i.invoiceNumber} · {String(i.date ?? "").slice(0, 10)}</span>
+                      <span>{Number(i.totalAmount || 0).toFixed(2)} / {rtl ? "المتبقي" : "due"} {Number(i.balanceDue || 0).toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mt-1 flex flex-wrap items-center gap-1 border-t border-[#888] pt-1">
+                <span>{rtl ? "ذكرني بالمراجعة" : "Review on"}</span>
+                <input type="date" className={inputCls} style={{ width: 140 }}
+                  value={reminderDate || (flag as any)?.reminderDate || ""}
+                  onChange={(e) => setReminderDate(e.target.value)} />
+                <button className={btnCls} disabled={!reminderDate}
+                  onClick={() => flagSave.mutate({ accountKind: kind, accountId: selRow.id, reminderDate })}>
+                  {rtl ? "تذكير" : "Remind"}
+                </button>
+              </div>
+            </div>
+          )}
+          {kind === "supplier" && selRow && (
+            <div className="mt-2 bg-white p-2 text-[12px] text-black">
+              <button className={btnCls} onClick={() => navigate(`/app/construction/sahl/cash?accountId=${selRow.id}&kind=supplier`)}>
+                {rtl ? "صرف" : "Pay"}
+              </button>
+            </div>
+          )}
+        </GreenDialog>
+      </div>
+    </div>
+  );
+}
