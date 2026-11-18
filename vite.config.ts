@@ -87,6 +87,10 @@ export default defineConfig({
     outDir: path.resolve(__dirname, "dist/public"),
     emptyOutDir: true,
     sourcemap: false,
+    // The APK supports Android 7 (API 24) and its bundled System WebView may
+    // be old, so optional chaining / nullish coalescing are transpiled down
+    // instead of shipping es2020 syntax that would throw a parse error.
+    target: ["es2017", "chrome61"],
     rollupOptions: {
       input: path.resolve(__dirname, "index.html"),
       // No manualChunks at all.

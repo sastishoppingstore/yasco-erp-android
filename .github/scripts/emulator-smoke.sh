@@ -9,10 +9,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 APK_DIR="$ROOT/src-tauri/gen/android/app/build/outputs/apk"
 
-# Prefer the signed APK produced by the "Sign APK for install" step; an
+# The smoke workflow signs the APK and drops it in the workspace root; an
 # unsigned build cannot be installed (INSTALL_PARSE_FAILED_NO_CERTIFICATES).
-if [ -f "$ROOT/YASCO-ERP-smoke.apk" ]; then
-  APK="$ROOT/YASCO-ERP-smoke.apk"
+if [ -f "$ROOT/yasco-smoke.apk" ]; then
+  APK="$ROOT/yasco-smoke.apk"
 else
   APK="$(find "$APK_DIR" -name '*-signed.apk' | head -1)"
   [ -n "$APK" ] || APK="$(find "$APK_DIR" -name '*.apk' | head -1)"
@@ -25,6 +25,10 @@ if [ -z "$APK" ] || [ ! -f "$APK" ]; then
   ls -R "$APK_DIR" 2>/dev/null | head -30 || true
   exit 1
 fi
+
+echo "=== android version ==="
+adb shell getprop ro.build.version.release || true
+adb shell getprop ro.build.version.sdk || true
 
 echo "=== install ==="
 adb install -r -t "$APK"
@@ -42,7 +46,7 @@ PID="$(adb shell pidof com.yasco.erp || true)"
 echo "pid: ${PID:-<none>}"
 if [ -z "$PID" ]; then
   echo "::error::app is not running after launch"
-  adb logcat -d | tail -60
+  adb logcat -d | tail -80
   exit 1
 fi
 
@@ -69,4 +73,9 @@ if adb logcat -d | grep -E "FATAL EXCEPTION|ERR_CONNECTION_REFUSED"; then
   exit 1
 fi
 
-echo "smoke test passed"
+echo "=== relaunch (second start must work too) ==="
+adb shell am start -W -n com.yasco.erp/.MainActivity
+sleep 8
+adb shell pidof com.yasco.erp >/dev/null || { echo "::error::app did not restart"; exit 1; }
+
+echo "smoke test passed on Android $(adb shell getprop ro.build.version.release)"

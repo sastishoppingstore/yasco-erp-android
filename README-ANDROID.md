@@ -42,11 +42,23 @@ GitHub Actions → **Android Build** → *Run workflow*, or push to `main`.
 
 | Workflow | Purpose |
 | --- | --- |
-| `android.yml` | Release build (arm64), signed APK, published to GitHub Releases |
-| `android-smoke.yml` | Boots an emulator, installs the APK, checks WebView + back button |
+| `android.yml` | Release build (universal, 4 ABIs), signed APK, published to GitHub Releases |
+| `android-smoke.yml` | Boots emulators for Android 8.0, 10, 12 and 14, installs the APK and checks WebView + back button |
 
 Every push produces `android-build-<n>` in this repository and `v1.0.<n>` in the
 public download repository (Actions artifact storage is not used).
+
+Build facts:
+
+| Item | Value |
+| --- | --- |
+| Framework | Tauri 2 (Rust shell + bundled web front-end + Android System WebView) |
+| Package | `com.yasco.erp` |
+| minSdkVersion | 24 (Android 7.0) |
+| targetSdkVersion / compileSdk | 35 |
+| versionCode | `150600 + <CI run number>` — grows on every build |
+| ABIs | `arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64` (one universal APK) |
+| Signing | release keystore, APK Signature Scheme V1 + V2 + V3 |
 
 Secrets:
 
@@ -93,7 +105,27 @@ Limitations worth knowing:
 * Conflicts are resolved by the server when the queued change is applied; there
   is no field level merge.
 
+## Splash screen and logo
+
+* The launcher icon is a real 3D mark generated from
+  `assets/branding/yasco-logo.svg` by `scripts/make-branding.py`
+  (`npx tauri icon` writes the Android mipmaps afterwards).
+* Android's `windowBackground` is replaced with a brand gradient + logo
+  layer-list (`res/drawable/ys_splash.xml`), so there is no white flash while
+  the WebView boots.
+* `index.html` contains an inline splash overlay (logo, wordmark, progress
+  bar) that fades out as soon as the bundle loads, with a 6 s hard fallback.
+
 ## Back button
+
+## Build verification
+
+CI fails the build unless `apksigner verify` reports V1, V2 **and** V3, `aapt
+dump badging` shows `minSdk 24`, `targetSdk 35`, the expected `versionCode`,
+`INTERNET` permission and all four ABIs. After publishing, the public asset is
+downloaded again and compared by SHA-256 (a truncated upload is the usual cause
+of *"package appears to be invalid"*), and the VPS mirror is checked the same
+way.
 
 `tauri android init` generates a `MainActivity` that inherits
 `handleBackNavigation = false`, which closes the app from any screen. During CI,

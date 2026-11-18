@@ -2,22 +2,127 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>YASCO - Enterprise Resource Planning System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;500;600;700&family=Tajawal:wght@400;500;700;800&display=swap" rel="stylesheet" />
     <link rel="manifest" href="/manifest.json" />
-    <meta name="theme-color" content="#2563eb" />
+    <meta name="theme-color" content="#0b1730" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="YASCO" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="icon" type="image/png" href="/logo-32.png" />
     <link rel="shortcut icon" type="image/png" href="/logo-32.png" />
+    <style>
+      /* Splash is inline so it paints before any bundle/CSS is fetched. */
+      #yasco-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+        background:
+          radial-gradient(120% 80% at 50% 34%, #1b3563 0%, #0b1730 52%, #04070f 100%);
+        color: #e8eefc;
+        font-family: "Tajawal", system-ui, -apple-system, "Segoe UI", sans-serif;
+        transition: opacity .45s ease, visibility .45s ease;
+        -webkit-tap-highlight-color: transparent;
+        user-select: none;
+        padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom);
+      }
+      #yasco-splash.ys-hide { opacity: 0; visibility: hidden; }
+      #yasco-splash .ys-glow {
+        position: absolute; width: min(78vw, 420px); height: min(78vw, 420px);
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(59,130,246,.32) 0%, rgba(37,99,235,.10) 45%, transparent 68%);
+        animation: ys-breathe 3.2s ease-in-out infinite;
+      }
+      #yasco-splash .ys-mark {
+        position: relative;
+        width: min(46vw, 210px);
+        height: auto;
+        border-radius: 30px;
+        box-shadow: 0 26px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(120,160,255,.16);
+        animation: ys-rise .7s cubic-bezier(.2,.8,.25,1) both;
+      }
+      #yasco-splash .ys-name {
+        position: relative;
+        margin-top: 26px;
+        font-size: clamp(28px, 8vw, 40px);
+        font-weight: 800;
+        letter-spacing: .26em;
+        line-height: 1;
+        animation: ys-rise .7s .08s cubic-bezier(.2,.8,.25,1) both;
+      }
+      #yasco-splash .ys-name span { color: #f5b301; }
+      #yasco-splash .ys-tag {
+        position: relative;
+        margin-top: 12px;
+        font-size: clamp(10px, 2.9vw, 13px);
+        letter-spacing: .32em;
+        text-transform: uppercase;
+        color: #9db4dd;
+        animation: ys-rise .7s .16s cubic-bezier(.2,.8,.25,1) both;
+      }
+      #yasco-splash .ys-bar {
+        position: relative;
+        margin-top: 34px;
+        width: min(46vw, 210px);
+        height: 3px;
+        border-radius: 99px;
+        background: rgba(148,180,255,.18);
+        overflow: hidden;
+      }
+      #yasco-splash .ys-bar i {
+        position: absolute; inset: 0;
+        width: 42%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, transparent, #5b8ef7 35%, #f5b301 70%, transparent);
+        animation: ys-slide 1.15s ease-in-out infinite;
+      }
+      @keyframes ys-rise { from { opacity: 0; transform: translateY(14px) scale(.97); } to { opacity: 1; transform: none; } }
+      @keyframes ys-breathe { 0%,100% { opacity: .75; transform: scale(.96); } 50% { opacity: 1; transform: scale(1.04); } }
+      @keyframes ys-slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+      @media (prefers-reduced-motion: reduce) {
+        #yasco-splash *, #yasco-splash { animation: none !important; }
+      }
+    </style>
   </head>
   <body>
+    <div id="yasco-splash" role="status" aria-label="YASCO ERP is loading">
+      <div class="ys-glow" aria-hidden="true"></div>
+      <img class="ys-mark" src="/splash-logo.png" alt="" aria-hidden="true" />
+      <div class="ys-name">YASCO <span>ERP</span></div>
+      <div class="ys-tag">Enterprise Resource Planning</div>
+      <div class="ys-bar" aria-hidden="true"><i></i></div>
+    </div>
     <div id="root"></div>
+    <script>
+      // Fade the splash once the app bundle has loaded, but never keep it on
+      // screen if something fails: a hard fallback removes it after 6 s.
+      (function () {
+        var splash = document.getElementById("yasco-splash");
+        if (!splash) return;
+        var started = Date.now();
+        var done = false;
+        function hide() {
+          if (done) return;
+          done = true;
+          splash.classList.add("ys-hide");
+          setTimeout(function () { splash.remove(); }, 700);
+        }
+        window.addEventListener("load", function () {
+          var wait = Math.max(0, 900 - (Date.now() - started));
+          setTimeout(hide, wait);
+        });
+        setTimeout(hide, 6000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

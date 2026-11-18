@@ -2,7 +2,7 @@ name: Android Build
 
 # Builds a signed YASCO ERP Android APK from the bundled front-end.
 # The live website / live ERP server is never contacted by this workflow:
-# it only reads the repository, builds assets and produces an APK artifact.
+# it only reads the repository, builds assets and produces an APK.
 
 on:
   workflow_dispatch:
@@ -17,6 +17,7 @@ on:
       - "appdist/**"
       - "appdist-stub/**"
       - "scripts/**"
+      - "assets/**"
       - "src-tauri/**"
       - "index.html"
       - "package.json"
@@ -95,9 +96,7 @@ jobs:
           yes | "$SDKM" --licenses >/dev/null 2>&1 || true
           "$SDKM" --install \
             "platform-tools" \
-            "platforms;android-34" \
             "platforms;android-35" \
-            "build-tools;34.0.0" \
             "build-tools;35.0.0" \
             "ndk;27.0.12077973" >/dev/null
           echo "NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
@@ -107,7 +106,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          # Every ABI the Play Store / OEM phones may ask for.
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2
@@ -123,16 +123,40 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/**/*.gradle*') }}
           restore-keys: gradle-${{ runner.os }}-
 
+      # versionCode must grow on every build, otherwise Android refuses the
+      # update with "package appears to be invalid" / "app not installed".
+      - name: Set build identity
+        run: |
+          set -e
+          VC=$((150600 + ${{ github.run_number }}))
+          echo "VERSION_CODE=$VC" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=15.6.1" >> "$GITHUB_ENV"
+          echo "APK_FILE=YASCO-ERP-$VC.apk" >> "$GITHUB_ENV"
+          # Written before `android init` so the generated Gradle project gets
+          # the value through Tauri itself (the patch script also enforces it).
+          VC="$VC" python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("src-tauri/tauri.android.conf.json")
+          cfg = json.loads(p.read_text(encoding="utf-8"))
+          android = cfg.setdefault("bundle", {}).setdefault("android", {})
+          android["versionCode"] = int(os.environ["VC"])
+          android["minSdkVersion"] = 24
+          p.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+          print("tauri.android.conf.json:", android)
+          PY
+          echo "build ${{ github.run_number }} -> versionCode $VC"
+
       - name: Init Android project
         run: npx tauri android init --ci
 
-      - name: Patch Android project (manifest + back button)
+      - name: Patch Android project (manifest, SDK levels, splash, back button)
         run: python3 scripts/patch-android.py
 
-      - name: Build APK (arm64)
-        run: npx tauri android build --apk --target aarch64
+      # One universal APK containing arm64-v8a, armeabi-v7a, x86 and x86_64.
+      - name: Build universal APK (4 ABIs)
+        run: npx tauri android build --apk --target aarch64 armv7 i686 x86_64
 
-      - name: Sign APK
+      - name: Sign APK (V1 + V2 + V3)
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -143,22 +167,66 @@ jobs:
           test -n "$KEYSTORE_BASE64" || { echo "Missing ANDROID_KEYSTORE_BASE64 secret"; exit 1; }
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           BT="$ANDROID_HOME/build-tools/35.0.0"
-          RAW=$(find src-tauri/gen/android/app/build/outputs/apk -name "*-unsigned.apk" | head -1)
+
+          # Prefer the universal output; a per-ABI output would only run on one
+          # kind of phone.
+          RAW=$(find src-tauri/gen/android/app/build/outputs/apk -path "*universal*" -name "*-unsigned.apk" | head -1)
+          [ -n "$RAW" ] || RAW=$(find src-tauri/gen/android/app/build/outputs/apk -name "*-unsigned.apk" | head -1)
           test -n "$RAW" || { echo "No unsigned APK produced"; find src-tauri/gen/android/app/build/outputs/apk -type f; exit 1; }
           echo "unsigned: $RAW"
+
           "$BT/zipalign" -p -f 4 "$RAW" aligned.apk
           "$BT/apksigner" sign \
             --ks release.keystore \
             --ks-key-alias "$KEY_ALIAS" \
             --ks-pass "pass:$KEYSTORE_PASSWORD" \
             --key-pass "pass:$KEY_PASSWORD" \
-            --out "YASCO-ERP-${{ github.run_number }}.apk" aligned.apk
-          "$BT/apksigner" verify --print-certs "YASCO-ERP-${{ github.run_number }}.apk" | head -5
+            --min-sdk-version 24 \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$APK_FILE" aligned.apk
+
           rm -f release.keystore aligned.apk
           # Stable name for the public download URL
           # (/releases/latest/download/YASCO-ERP.apk and yasco.tech/YASCO-ERP.apk)
-          cp "YASCO-ERP-${{ github.run_number }}.apk" YASCO-ERP.apk
-          ls -lh "YASCO-ERP-${{ github.run_number }}.apk" YASCO-ERP.apk
+          cp "$APK_FILE" YASCO-ERP.apk
+          ls -lh "$APK_FILE" YASCO-ERP.apk
+
+      - name: Verify APK (signature, SDK levels, ABIs, checksum)
+        run: |
+          set -e
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          APK=YASCO-ERP.apk
+
+          echo "=== signature ==="
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee signature.txt
+          grep -q "Verified using v1 scheme (JAR signing): true" signature.txt || { echo "::error::V1 signature missing"; exit 1; }
+          grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" signature.txt || { echo "::error::V2 signature missing"; exit 1; }
+          grep -q "Verified using v3 scheme (APK Signature Scheme v3): true" signature.txt || { echo "::error::V3 signature missing"; exit 1; }
+
+          echo "=== badging ==="
+          AAPT="$BT/aapt"
+          [ -x "$AAPT" ] || AAPT="$BT/aapt2"
+          "$AAPT" dump badging "$APK" | tee badging.txt | head -12
+          grep -q "package: name='com.yasco.erp'" badging.txt
+          grep -q "sdkVersion:'24'" badging.txt || { echo "::error::minSdk is not 24"; exit 1; }
+          grep -q "targetSdkVersion:'35'" badging.txt || { echo "::error::targetSdk is not 35"; exit 1; }
+          grep -q "versionCode:'$VERSION_CODE'" badging.txt || { echo "::error::unexpected versionCode"; exit 1; }
+
+          echo "=== ABIs ==="
+          NATIVE=$(grep "native-code:" badging.txt)
+          echo "$NATIVE"
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            echo "$NATIVE" | grep -q "'$abi'" || { echo "::error::missing ABI $abi"; exit 1; }
+          done
+
+          echo "=== permission ==="
+          grep -q "uses-permission: name='android.permission.INTERNET'" badging.txt
+
+          echo "=== checksum ==="
+          sha256sum "$APK" | tee checksum.txt
+          echo "SHA256=$(cut -d' ' -f1 checksum.txt)" >> "$GITHUB_ENV"
 
       # Actions artifact storage quota par depend nahi karta: APK seedha
       # GitHub Release me publish hota hai (private repo, login ke saath).
@@ -168,15 +236,17 @@ jobs:
           tag_name: android-build-${{ github.run_number }}
           name: YASCO ERP Android — build ${{ github.run_number }}
           body: |
-            Bundled offline-first Android build (arm64).
+            Universal signed Android build.
 
+            - versionCode: `${{ env.VERSION_CODE }}` (build ${{ github.run_number }})
+            - minSdk 24 (Android 7.0) · targetSdk 35
+            - ABIs: arm64-v8a, armeabi-v7a, x86, x86_64
+            - Signature: V1 + V2 + V3 (YASCO release key)
+            - SHA-256: `${{ env.SHA256 }}`
             - Commit: `${{ github.sha }}`
-            - Version: 15.6.1 (versionCode 150601)
-            - Signed with the YASCO release key
-
-            Download the `.apk` below and install it on the phone
-            (allow "Install unknown apps" for the browser/file manager).
-          files: YASCO-ERP-*.apk
+          files: |
+            YASCO-ERP-*.apk
+            checksum.txt
           fail_on_unmatched_files: true
 
       # Public download home. The landing page links to
@@ -191,14 +261,36 @@ jobs:
           name: YASCO ERP Android — build ${{ github.run_number }}
           make_latest: true
           body: |
-            Bundled ERP for Android (arm64, signed).
+            Universal signed APK for Android 7.0+.
 
-            - Version 15.6.1 (versionCode 150601) — build ${{ github.run_number }}
-            - Commit: ${{ github.sha }}
-            - Offline: app shell, cached reads **and** queued writes
+            - versionCode `${{ env.VERSION_CODE }}` · version 15.6.1
+            - 4 ABIs (arm64-v8a, armeabi-v7a, x86, x86_64)
+            - V1 + V2 + V3 signatures
+            - SHA-256: `${{ env.SHA256 }}`
             - Direct link: https://github.com/sastishoppingstore/yasco-erp-download/releases/latest/download/YASCO-ERP.apk
           files: YASCO-ERP.apk
           fail_on_unmatched_files: true
+
+      # A truncated upload is the classic cause of "package appears to be
+      # invalid" on the phone, so the published asset is downloaded again and
+      # compared byte for byte with the file that was just verified.
+      - name: Verify published download
+        run: |
+          set -e
+          for i in 1 2 3 4 5; do
+            if curl -fsSL --max-time 300 -o published.apk \
+              "https://github.com/sastishoppingstore/yasco-erp-download/releases/download/v1.0.${{ github.run_number }}/YASCO-ERP.apk"; then
+              break
+            fi
+            sleep 10
+          done
+          test -s published.apk || { echo "::error::public download not reachable"; exit 1; }
+          LOCAL=$(sha256sum YASCO-ERP.apk | cut -d' ' -f1)
+          REMOTE=$(sha256sum published.apk | cut -d' ' -f1)
+          echo "local:  $LOCAL"
+          echo "remote: $REMOTE"
+          [ "$LOCAL" = "$REMOTE" ] || { echo "::error::published APK differs (truncated upload?)"; exit 1; }
+          ls -l published.apk
 
       # Mirror the APK to the VPS as well, so customers can download it from
       # https://yasco.tech/YASCO-ERP.apk (no GitHub redirect). Same restricted
@@ -214,6 +306,12 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H 203.161.63.59 >> ~/.ssh/known_hosts 2>/dev/null
           ssh -i ~/.ssh/deploy_key -T -o StrictHostKeyChecking=yes root@203.161.63.59 deploy-apk \
-            < "YASCO-ERP-${{ github.run_number }}.apk"
+            < YASCO-ERP.apk
           sleep 2
-          curl -sI --max-time 60 https://yasco.tech/YASCO-ERP.apk | head -4
+          curl -sI --max-time 60 "https://yasco.tech/YASCO-ERP.apk?v=${{ env.VERSION_CODE }}" | head -4
+          # Cache-busted download must match the verified checksum exactly.
+          curl -fsSL --max-time 300 -o mirror.apk \
+            "https://yasco.tech/YASCO-ERP.apk?v=${{ env.VERSION_CODE }}"
+          [ "$(sha256sum mirror.apk | cut -d' ' -f1)" = "$SHA256" ] \
+            || { echo "::error::mirror differs from the signed APK"; exit 1; }
+          ls -l mirror.apk

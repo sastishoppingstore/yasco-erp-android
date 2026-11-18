@@ -1,11 +1,12 @@
 name: Android Smoke Test (emulator)
 
-# Boots a real Android emulator, installs the APK and verifies that
+# Boots real Android emulators, installs the signed APK and verifies that
 #   * the app starts and stays in the foreground,
 #   * the bundled shell really loads (the WebView must not report
 #     ERR_CONNECTION_REFUSED — that would mean the loopback server died),
-#   * the hardware back button does not kill the app on the first press.
+#   * the hardware back button does not crash the app.
 #
+# Covers the Android versions the customers actually use: 8.0, 10, 12, 14.
 # Kept separate from the release workflow so a flaky emulator can never block
 # a release build. Run it manually from the Actions tab.
 
@@ -17,7 +18,10 @@ on:
       - "src-tauri/**"
       - "src/lib/offline/**"
       - "src/components/OfflineBar.tsx"
+      - "index.html"
       - "scripts/patch-android.py"
+      - "scripts/make-branding.py"
+      - "assets/branding/**"
       - ".github/scripts/emulator-smoke.sh"
       - ".github/workflows/android-smoke.yml"
 
@@ -26,8 +30,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
-    name: Emulator smoke test
+  build:
+    name: Build test APK (x86_64)
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -53,7 +57,6 @@ jobs:
           mkdir -p appdist
           cp -a dist/public/. appdist/
           rm -f appdist/sw.js appdist/registerSW.js appdist/workbox-*.js
-          echo "staged files: $(find appdist -type f | wc -l)"
 
       - uses: actions/setup-java@v4
         with:
@@ -61,14 +64,14 @@ jobs:
           java-version: "17"
 
       - name: Install Android SDK + NDK
-        run: |
+        run: |-
           set -e
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           SDKM="$(command -v sdkmanager || ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)"
           yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-          "$SDKM" --install "platform-tools" "platforms;android-34" "platforms;android-35" \
+          "$SDKM" --install "platform-tools" "platforms;android-35" \
             "build-tools;35.0.0" "ndk;27.0.12077973" >/dev/null
           echo "NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$SDK/ndk/27.0.12077973" >> "$GITHUB_ENV"
@@ -92,14 +95,16 @@ jobs:
 
       - name: Init + patch Android project
         run: |
+          set -e
           npx tauri android init --ci
-          python3 scripts/patch-android.py
-          grep -n "handleBackNavigation" -r src-tauri/gen/android/app/src/main/java | head -3
+          BUILD_VERSION_CODE=$((150600 + ${{ github.run_number }})) python3 scripts/patch-android.py
+          F=$(find src-tauri/gen/android/app/src/main/java -name MainActivity.kt | head -1)
+          grep -qE "handleBackNavigation.*= *true" "$F" || { echo "::error::back navigation patch missing"; exit 1; }
 
       - name: Build x86_64 APK
         run: npx tauri android build --apk --target x86_64
 
-      - name: Sign APK for install
+      - name: Sign APK (V1 + V2 + V3)
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -111,42 +116,43 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > release.keystore
           BT="$ANDROID_HOME/build-tools/35.0.0"
           RAW=$(find src-tauri/gen/android/app/build/outputs/apk -name "*-unsigned.apk" | head -1)
-          test -n "$RAW" || { echo "no unsigned APK produced"; exit 1; }
-          echo "unsigned: $RAW"
+          test -n "$RAW" || { echo "no unsigned APK produced"; find src-tauri/gen/android/app/build/outputs/apk -type f; exit 1; }
           "$BT/zipalign" -p -f 4 "$RAW" aligned.apk
-          "$BT/apksigner" sign \
-            --ks release.keystore \
-            --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass "pass:$KEYSTORE_PASSWORD" \
-            --key-pass "pass:$KEY_PASSWORD" \
-            --out YASCO-ERP-smoke.apk aligned.apk
-          "$BT/apksigner" verify --print-certs YASCO-ERP-smoke.apk | head -3
+          "$BT/apksigner" sign --ks release.keystore --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass "pass:$KEYSTORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" \
+            --min-sdk-version 24 --v1-signing-enabled true \
+            --v2-signing-enabled true --v3-signing-enabled true \
+            --out yasco-smoke.apk aligned.apk
+          "$BT/apksigner" verify --verbose yasco-smoke.apk | head -6
           rm -f release.keystore aligned.apk
-          ls -lh YASCO-ERP-smoke.apk
+          ls -lh yasco-smoke.apk
 
-      - name: Locate built APK
-        run: |
-          set -e
-          APK=$(find "$GITHUB_WORKSPACE/src-tauri/gen/android/app/build/outputs/apk" -name "*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "no APK found; build output tree:"
-            ls -R src-tauri/gen/android/app/build/outputs 2>/dev/null | head -30
-            exit 1
-          fi
-          cp "$APK" "$RUNNER_TEMP/yasco-smoke.apk"
-          echo "SMOKE_APK=$RUNNER_TEMP/yasco-smoke.apk" >> "$GITHUB_ENV"
-          echo "smoke APK: $APK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk-x86_64
+          path: yasco-smoke.apk
+          retention-days: 7
 
-      - name: Assert back-button patch applied
-        run: |
-          set -e
-          F=$(find src-tauri/gen/android/app/src/main/java -name MainActivity.kt | head -1)
-          echo "$F"
-          grep -qE "handleBackNavigation.*= *true" "$F" || { echo "::error::back navigation patch missing"; exit 1; }
-          head -12 "$F"
+  smoke:
+    name: Android ${{ matrix.api }} emulator
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Android 8.0, 10, 12, 14
+        api: [26, 29, 31, 34]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk-x86_64
 
       - name: Enable KVM
-        run: |
+        run: |-
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
@@ -154,8 +160,8 @@ jobs:
       - name: Run on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 31
-          target: google_apis
+          api-level: ${{ matrix.api }}
+          target: default
           arch: x86_64
           profile: pixel_5
           disable-animations: true
