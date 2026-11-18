@@ -8,8 +8,22 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths-ignore:
-      - "**.md"
+    # Only rebuild the APK when the app itself changes (docs, the landing page
+    # or the smoke workflow must not burn a 15 minute Android build).
+    paths:
+      - "src/**"
+      - "api/**"
+      - "public/**"
+      - "appdist/**"
+      - "appdist-stub/**"
+      - "scripts/**"
+      - "src-tauri/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.*"
+      - "tsconfig*.json"
+      - ".github/workflows/android.yml"
 
 permissions:
   contents: write
