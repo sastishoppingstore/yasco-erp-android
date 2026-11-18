@@ -24,10 +24,22 @@ remote-URL wrapper.
 * Because the shell is local, the app opens instantly and never shows a
   browser-hosted page.
 
+## Install
+
+Download the latest APK from the repository **Releases** page:
+
+`https://github.com/sastishoppingstore/yasco-erp-android/releases`
+
+Every push to `main` produces a new release `android-build-<n>` with a signed
+`YASCO-ERP-<n>.apk` (arm64). On the phone: open the release, download the APK,
+allow "Install unknown apps" for the browser, install, then log in with the
+normal ERP account.
+
 ## Build
 
 GitHub Actions → **Android Build** → *Run workflow*, or push to `main`.
-The signed APK is attached as the `yasco-erp-apk` artifact (kept 30 days).
+The signed APK is published as a GitHub Release (Actions artifact storage quota
+is not used).
 
 The keystore lives only in repository secrets:
 
