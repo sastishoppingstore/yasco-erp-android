@@ -557,7 +557,7 @@ export default function ConstructionLayout() {
 
   return (
     <div
-      className="flex min-h-screen flex-col bg-[#141414] text-white"
+      className="flex min-h-screen w-full max-w-full flex-col bg-[#141414] text-white"
       dir={rtl ? "rtl" : "ltr"}
       style={{
         backgroundImage: "radial-gradient(rgba(255,255,255,0.05) 1px, transparent 1px)",
@@ -605,8 +605,9 @@ export default function ConstructionLayout() {
         <HeaderMenu rtl={rtl} />
       </header>
 
-      {/* ===== Sahl dropdown menu bar (desktop menus) ===== */}
-      <div className="flex flex-wrap items-stretch border-b border-[#999] bg-white">
+      {/* ===== Sahl dropdown menu bar (desktop only — phones use the drawer
+           and the scrolling quick-menu strip, so nothing wraps or overflows) ===== */}
+      <div className="hidden flex-wrap items-stretch border-b border-[#999] bg-white md:flex">
         {dropMenus.map((m) => (
           <DropMenu key={m.label} m={m} rtl={rtl}
             onExit={() => {
@@ -617,7 +618,7 @@ export default function ConstructionLayout() {
       </div>
 
       {/* ===== Sahl menu strip ===== */}
-      <div className="flex items-stretch gap-0 overflow-x-auto bg-[#f4f4f4] text-slate-800 shadow">
+      <div className="flex min-w-0 items-stretch gap-0 overflow-x-auto bg-[#f4f4f4] text-slate-800 shadow">
         <div className="flex flex-1 items-stretch">
           {quickMenu.map((m) => (
             <NavLink
@@ -625,7 +626,7 @@ export default function ConstructionLayout() {
               to={m.path}
               end={m.path === "/app/construction"}
               className={({ isActive }) => cn(
-                "flex items-center whitespace-nowrap border-e border-slate-300/70 px-3 py-2 text-[13px] font-semibold transition-colors lg:px-4",
+                "flex shrink-0 items-center whitespace-nowrap border-e border-slate-300/70 px-2.5 py-2 text-[12px] font-semibold transition-colors lg:px-4 lg:text-[13px]",
                 isActive ? "bg-[#2fae4e] text-white" : "text-slate-700 hover:bg-slate-200"
               )}
             >
@@ -635,7 +636,7 @@ export default function ConstructionLayout() {
         </div>
         <button
           onClick={() => navigate("/app/construction/sahl/sales")}
-          className="flex shrink-0 items-center gap-1 bg-[#2fae4e] px-3 py-2 text-[13px] font-bold text-white hover:brightness-110 lg:px-5"
+          className="flex shrink-0 items-center gap-1 bg-[#2fae4e] px-2.5 py-2 text-[12px] font-bold text-white hover:brightness-110 lg:px-5 lg:text-[13px]"
         >
           <Plus className="h-4 w-4" />
           {rtl ? "فاتورة جديدة" : "New Invoice"}
@@ -651,20 +652,20 @@ export default function ConstructionLayout() {
       </main>
 
       {/* ===== Sahl status bar ===== */}
-      <footer className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 bg-[#0d0d0d] px-3 py-1.5 text-xs text-white/85">
+      <footer className="fixed inset-x-0 bottom-0 z-40 flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap bg-[#0d0d0d] px-2.5 py-1.5 text-[10px] text-white/85 sm:gap-3 sm:px-3 sm:text-xs">
         <span className="font-mono font-bold tabular-nums">
           {now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
         </span>
-        <span className="text-white/30">|</span>
-        <span className="tabular-nums">{now.toLocaleDateString("en-GB")}</span>
+        <span className="hidden text-white/30 sm:inline">|</span>
+        <span className="hidden tabular-nums sm:inline">{now.toLocaleDateString("en-GB")}</span>
         <span className="text-white/30">|</span>
         <CashBalance rtl={rtl} />
         <div className="flex-1" />
-        <span className="hidden truncate sm:inline">{rtl ? "المقاولات للمقاولات وإدارة المشاريع" : "Construction & project management"}</span>
-        <span className="text-white/30">|</span>
-        <span className="max-w-28 truncate font-semibold">{userName}</span>
-        <span className="text-white/30">|</span>
-        <span className="text-white/50">Powered by YASCO</span>
+        <span className="hidden truncate lg:inline">{rtl ? "المقاولات للمقاولات وإدارة المشاريع" : "Construction & project management"}</span>
+        <span className="hidden text-white/30 lg:inline">|</span>
+        <span className="max-w-24 truncate font-semibold sm:max-w-28">{userName}</span>
+        <span className="hidden text-white/30 sm:inline">|</span>
+        <span className="hidden text-white/50 sm:inline">Powered by YASCO</span>
       </footer>
     </div>
   );

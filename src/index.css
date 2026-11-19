@@ -201,3 +201,14 @@ html {
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
   border-radius: 8px;
 }
+/* ── Fixed 1:1 mobile scale ─────────────────────────────
+   The app UI is designed at CSS pixel = device-independent pixel. WebView
+   font boosting and page zoom would enlarge it on narrow screens, so keep
+   text at 100% and let components (not the browser) control sizing. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  max-width: 100%;
+}

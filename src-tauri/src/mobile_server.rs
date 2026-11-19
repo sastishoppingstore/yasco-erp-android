@@ -631,6 +631,25 @@ window.__YASCO_SCHEME = __SCHEME__;
       log('YASCO_JS_REJECTION');
     });
   } catch (e) {}
+  // The bundled UI is designed at a fixed 1:1 scale. Android WebView can
+  // inflate text (font boosting) and allow pinch-zoom, which makes the phone
+  // look zoomed-in; pin the viewport on every page of the shell.
+  function lockZoom() {
+    try {
+      var meta = document.querySelector('meta[name="viewport"]');
+      if (meta) {
+        meta.setAttribute('content', 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover');
+      }
+      var root = document.documentElement;
+      if (root) {
+        root.style.webkitTextSizeAdjust = '100%';
+        root.style.textSizeAdjust = '100%';
+        root.style.touchAction = 'pan-x pan-y';
+      }
+    } catch (e) {}
+  }
+  lockZoom();
+  document.addEventListener('DOMContentLoaded', lockZoom);
   // boot.html is our own launcher, not the app: no UI marker there.
   if (location.pathname.indexOf('boot.html') !== -1) return;
   function watch() {
