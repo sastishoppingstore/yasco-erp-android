@@ -1,5 +1,33 @@
-import { forwardRef } from "react";
+import { forwardRef, useEffect, useState } from "react";
+import QRCode from "qrcode";
 import { useLanguage } from "@/providers/language";
+
+/**
+ * `zatcaQrCode` stores the raw TLV base64 payload, not an image URL. Rendering
+ * it directly in <img src> produced a broken image, so encode it to a data URL.
+ */
+function QrImage({ value, size, alt }: { value: string; size: number; alt: string }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    if (!value) {
+      setUrl("");
+      return;
+    }
+    QRCode.toDataURL(value, { width: size * 4, margin: 1 })
+      .then((next) => {
+        if (!cancelled) setUrl(next);
+      })
+      .catch(() => {
+        if (!cancelled) setUrl("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [value, size]);
+  if (!url) return null;
+  return <img src={url} alt={alt} style={{ width: `${size}px`, height: `${size}px` }} />;
+}
 
 interface InvoicePrintTemplateProps {
   invoice: {
@@ -145,8 +173,8 @@ const InvoicePrintTemplate = forwardRef<HTMLDivElement, InvoicePrintTemplateProp
           </div>
           {showQr && invoice.zatcaQrCode && (
             <div style={{ textAlign: "center", marginTop: "3mm" }}>
-              <img src={invoice.zatcaQrCode} alt="ZATCA QR" style={{ width: "18mm", height: "18mm" }} />
-              <div style={{ fontSize: "7px", color: "#666" }}>ZATCA Compliant</div>
+              <QrImage value={invoice.zatcaQrCode} size={68} alt="ZATCA QR" />
+              <div style={{ fontSize: "7px", color: "#666" }}>{isAr ? "رمز الفاتورة الإلكترونية" : "E-invoice QR"}</div>
             </div>
           )}
           {notes && <div style={{ fontSize: "8px", color: "#666", marginTop: "2mm", textAlign: "center" }}>{notes}</div>}
@@ -579,14 +607,14 @@ const InvoicePrintTemplate = forwardRef<HTMLDivElement, InvoicePrintTemplateProp
                   display: "flex", alignItems: "center", justifyContent: "center", gap: "4px",
                 }}>
                   <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#059669", display: "inline-block" }} />
-                  ZATCA VERIFIED
+                  {isAr ? "رمز الفاتورة الإلكترونية" : "E-INVOICE QR"}
                 </div>
                 <div style={{
                   display: "inline-block", padding: "8px", borderRadius: "12px",
                   background: "white", boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
                   border: "1px solid #d1fae5",
                 }}>
-                  <img src={invoice.zatcaQrCode} alt="ZATCA QR" style={{ width: "90px", height: "90px" }} />
+                  <QrImage value={invoice.zatcaQrCode} size={90} alt="ZATCA QR" />
                 </div>
                 <div style={{ fontSize: "8px", color: "#64748b", marginTop: "6px" }}>
                   {isAr ? "امسح للتحقق من الفاتورة" : "Scan to verify invoice"}

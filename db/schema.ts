@@ -785,9 +785,6 @@ export const salesQuotationItems = mysqlTable("sales_quotation_items", {
   unitPrice: decimal("unit_price", { precision: 18, scale: 4 }).notNull(),
   discountPercent: decimal("discount_percent", { precision: 5, scale: 2 }).default("0").notNull(),
   taxPercent: decimal("tax_percent", { precision: 5, scale: 2 }).default("15").notNull(),
-  taxCategory: mysqlEnum("tax_category", ["S", "E", "Z", "O"]).default("S").notNull(),
-  exemptionReason: varchar("exemption_reason", { length: 255 }),
-  exemptionReasonCode: varchar("exemption_reason_code", { length: 20 }),
   totalAmount: decimal("total_amount", { precision: 18, scale: 4 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -899,6 +896,9 @@ export const invoiceItems = mysqlTable("invoice_items", {
   unitPrice: decimal("unit_price", { precision: 18, scale: 4 }).notNull(),
   discountPercent: decimal("discount_percent", { precision: 5, scale: 2 }).default("0").notNull(),
   taxPercent: decimal("tax_percent", { precision: 5, scale: 2 }).default("15").notNull(),
+  taxCategory: mysqlEnum("tax_category", ["S", "E", "Z", "O"]).default("S").notNull(),
+  exemptionReason: varchar("exemption_reason", { length: 255 }),
+  exemptionReasonCode: varchar("exemption_reason_code", { length: 20 }),
   totalAmount: decimal("total_amount", { precision: 18, scale: 4 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });

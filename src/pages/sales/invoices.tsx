@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -270,7 +270,7 @@ export default function InvoicesPage() {
   const companyNameAr = settings?.companyNameAr || "";
   const companyAddress = settings?.address || "";
   const companyPhone = settings?.phone || "";
-  const companyVat = settings?.taxNumber || settings?.vatNumber || "";
+  const companyVat = settings?.taxNumber || "";
   const companyCr = settings?.crNumber || "";
   const companyEmail = settings?.email || "";
   const companyWebsite = settings?.website || "";
@@ -505,7 +505,7 @@ export default function InvoicesPage() {
     const pCustVat = useDetail ? (dInvRow?.customerVat || detailCustomer?.vatNumber || detailCustomer?.taxNumber || "") : customerVat;
     const pCustCr = useDetail ? (dInvRow?.customerCr || detailCustomer?.crNumber || "") : customerCr;
     const pCustEmail = useDetail ? (dInvRow?.customerEmail || detailCustomer?.email || "") : customerEmail;
-    const pCustPo = useDetail ? detailInvoice?.poNumber : poNo;
+    const pCustPo = useDetail ? (detailInvoice?.poNumber || "") : (poNo || "");
     const pType = useDetail ? (detailInvoice?.invoiceType === "zatca" ? "zatca" : "standard") : invoiceTypeMode;
 
     // Real ZATCA e-invoice QR (TLV base64) — no external image API any more
@@ -548,14 +548,14 @@ export default function InvoicesPage() {
       balPrior: useDetail && detailCustomer?.currentBalance != null ? Number(detailCustomer.currentBalance) - pTotal : null,
       balAfter: useDetail && detailCustomer?.currentBalance != null ? Number(detailCustomer.currentBalance) : null,
       hasAccount: useDetail ? !!detailCustomer?.id : false,
-      workedMonth: useDetail ? detailInvoice?.workedMonth : (workedMonth || undefined),
+      workedMonth: useDetail ? (detailInvoice?.workedMonth || "") : (workedMonth || ""),
       invoiceNo: useDetail ? detailInvoice?.invoiceNumber : undefined,
       paymentType: useDetail ? ((detailInvoice as any)?.paymentMethod || (detailInvoice as any)?.paymentType || "Credit") : (paymentType || "Credit"),
       cashier: useDetail ? (detailInvoice?.cashier || "مدير النظام") : (cashier || "مدير النظام"),
       date: useDetail ? detailInvoice?.date : new Date().toISOString().slice(0, 10),
-      time: useDetail ? detailInvoice?.time : new Date().toTimeString().slice(0, 5),
-      dueDate: useDetail ? detailInvoice?.dueDate : (dueDate || undefined),
-      poNumber: useDetail ? detailInvoice?.poNumber : (poNo || undefined),
+      time: useDetail ? (detailInvoice?.time || "") : new Date().toTimeString().slice(0, 5),
+      dueDate: useDetail ? (detailInvoice?.dueDate || "") : (dueDate || ""),
+      poNumber: useDetail ? (detailInvoice?.poNumber || "") : (poNo || ""),
       dueInWords: undefined,
       qrBase64,
       printItems: printItems.map((i: any) => ({ ...i, totalHour: i.qty, vat: (i.total || 0) * 0.15, grandTotal: (i.total || 0) * 1.15 }))
@@ -619,7 +619,18 @@ export default function InvoicesPage() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    sendWhatsAppInvoice.mutate({ invoiceId: inv.id });
+    // Server-side Twilio send (best-effort; no-op unless Twilio is configured)
+    const phone = detail.customer?.phone || "";
+    if (phone) {
+      sendWhatsAppInvoice.mutate({
+        customerPhone: phone,
+        customerName: custName,
+        invoiceNumber: inv.invoiceNumber || "",
+        amount: Number(inv.totalAmount || 0),
+        currency,
+        companyName: companyName || "",
+      });
+    }
   };
 
   const handleEmailFromView = () => {

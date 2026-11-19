@@ -3,7 +3,7 @@
  * Frontend se WhatsApp bhejne ke liye
  */
 import { z } from "zod";
-import { createRouter, authedProcedure } from "./middleware";
+import { createRouter, authedMutation } from "./middleware";
 import {
   sendWhatsApp,
   sendInvoiceReminder,
@@ -17,7 +17,7 @@ import {
 export const whatsappRouter = createRouter({
 
   // Custom message bhejo
-  send: authedProcedure
+  send: authedMutation
     .input(z.object({
       to: z.string().min(7),
       message: z.string().min(1).max(1600),
@@ -33,7 +33,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Invoice reminder
-  sendInvoiceReminder: authedProcedure
+  sendInvoiceReminder: authedMutation
     .input(z.object({
       customerPhone: z.string(),
       customerName: z.string(),
@@ -49,7 +49,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Invoice banane ke baad
-  sendInvoiceCreated: authedProcedure
+  sendInvoiceCreated: authedMutation
     .input(z.object({
       customerPhone: z.string(),
       customerName: z.string(),
@@ -64,7 +64,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Payment receive hone ke baad
-  sendPaymentReceived: authedProcedure
+  sendPaymentReceived: authedMutation
     .input(z.object({
       customerPhone: z.string(),
       customerName: z.string(),
@@ -79,7 +79,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Low stock alert
-  sendLowStock: authedProcedure
+  sendLowStock: authedMutation
     .input(z.object({
       managerPhone: z.string(),
       productName: z.string(),
@@ -93,7 +93,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Employee welcome
-  sendEmployeeWelcome: authedProcedure
+  sendEmployeeWelcome: authedMutation
     .input(z.object({
       employeePhone: z.string(),
       employeeName: z.string(),
@@ -107,7 +107,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Salary notification
-  sendSalary: authedProcedure
+  sendSalary: authedMutation
     .input(z.object({
       employeePhone: z.string(),
       employeeName: z.string(),
@@ -122,7 +122,7 @@ export const whatsappRouter = createRouter({
     }),
 
   // Check if WhatsApp is configured
-  isConfigured: authedProcedure
+  isConfigured: authedMutation
     .query(() => {
       return {
         configured: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN),

@@ -61,6 +61,7 @@ import { portalEmployeeRouter } from "./portalEmployeeRouter";
 import { healthcareRouter } from "./healthcareRouter";
 import { educationRouter } from "./educationRouter";
 import { thermalPrintRouter } from "./thermalPrintRouter";
+import { whatsappRouter } from "./whatsappRouter";
 import { hotelRouter } from "./hotelRouter";
 import { constructionRouter } from "./constructionRouter";
 import { decorationRouter } from "./decorationRouter"; // [decoration]
@@ -71,7 +72,6 @@ import { constructionPaymentRouter } from "./constructionPaymentRouter";
 import { jobCostingRouter } from "./jobCostingRouter";
 import { hseSafetyRouter } from "./hseSafetyRouter";
 import { qiwaRouter } from "./qiwaRouter";
-import { manpowerRouter } from "./manpowerRouter";
 import { companyRouter } from "./companyRouter";
 import { invoiceRouter as completeInvoiceRouter } from "./completeAuthInvoiceRouter";
 import { aiRouter } from "./aiConstructionRouter";
@@ -171,7 +171,6 @@ word: wordRouter,
   jobCosting: jobCostingRouter,
   hseSafety: hseSafetyRouter,
   qiwa: qiwaRouter,
-  manpower: manpowerRouter,
   company: companyRouter,
   invoice: completeInvoiceRouter,
   ai: aiRouter,
@@ -196,6 +195,7 @@ word: wordRouter,
   healthcareComplete: healthcareCompleteRouter,
   workshopComplete: workshopCompleteRouter,
   thermalPrint: thermalPrintRouter,
+  whatsapp: whatsappRouter,
 });
 
 export type AppRouter = typeof appRouter;
