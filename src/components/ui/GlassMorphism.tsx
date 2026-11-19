@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import type { CSSProperties } from "react";
 
 interface GlassmorphismProps {
   /**
@@ -43,13 +44,13 @@ export function Glassmorphism({
         "border-[var(--glass-border-opacity,0.1)]",
         "border-white/[var(--glass-border-opacity,0.1)]",
         "shadow-[0_8px_32px_rgba(0,0,0,0.1)]",
-        style={{
-          "--glass-blur": `${blur}px`,
-          "--glass-opacity": `${opacity}`,
-          "--glass-border-opacity": `${borderOpacity}`
-        }},
         className
       )}
+      style={{
+        "--glass-blur": `${blur}px`,
+        "--glass-opacity": `${opacity}`,
+        "--glass-border-opacity": `${borderOpacity}`
+      } as CSSProperties}
     >
       {children}
     </div>

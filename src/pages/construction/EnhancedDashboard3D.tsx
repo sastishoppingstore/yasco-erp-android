@@ -290,13 +290,6 @@ const ProjectInsights = () => {
     </Card>
   );
 };
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-};
 
 /**
  * MAIN ENHANCED 3D DASHBOARD

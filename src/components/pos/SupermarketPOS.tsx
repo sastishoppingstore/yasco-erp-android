@@ -323,7 +323,8 @@ export default function SupermarketPOS() {
                       <span>SAR {total.toFixed(2)}</span>
                     </div>
                   </div>
-                </div>
+                 </>
+            )}
               </CardContent>
               <CardFooter className="flex justify-end">
                 <Button 
@@ -338,6 +339,5 @@ export default function SupermarketPOS() {
           </div>
         </div>
       </div>
-    </div>
   );
 }

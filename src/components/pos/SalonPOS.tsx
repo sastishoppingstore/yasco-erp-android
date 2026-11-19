@@ -417,12 +417,12 @@ export default function SalonPOS() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className={`px-2 py-1 text-xs rounded-full 
-                              ${appointment.status === "scheduled" ? "bg-blue-100 text-blue-800" : ""
-                              } ${appointment.status === "completed" ? "bg-green-100 text-green-800" : ""
-                              } ${appointment.status === "cancelled" ? "bg-red-100 text-red-800" : ""
-                              } ${appointment.status === "no-show" ? "bg-orange-100 text-orange-800" : ""}
-                            }">
+                            <span className={`px-2 py-1 text-xs rounded-full ${
+                              appointment.status === "scheduled" ? "bg-blue-100 text-blue-800" :
+                              appointment.status === "completed" ? "bg-green-100 text-green-800" :
+                              appointment.status === "cancelled" ? "bg-red-100 text-red-800" :
+                              "bg-orange-100 text-orange-800"
+                            }`}>
                               {appointment.status === "scheduled" ? "Scheduled" :
                                appointment.status === "completed" ? "Completed" :
                                appointment.status === "cancelled" ? "Cancelled" : "No-Show"}

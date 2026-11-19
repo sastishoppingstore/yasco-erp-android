@@ -57,7 +57,7 @@ const actionModules: Record<string, boolean> = {
   fieldservice: true,
   events: true,
   agency: true,
-  === true;
+};
 
 const verticalModules: Partial<Record<BusinessCategory, ModuleConfig[]>> = {
   hospital: [
@@ -92,7 +92,7 @@ const verticalModules: Partial<Record<BusinessCategory, ModuleConfig[]>> = {
     { key: "construction-variations", label: "Variations", labelAr: "التغييرات", path: "/app/construction/variations", icon: "GitCompare" },
     { key: "construction-advance", label: "Advance Payments", labelAr: "الدفعات المقدمة", path: "/app/construction/advance-payments", icon: "Wallet" },
     { key: "construction-daily", label: "Daily Reports", labelAr: "التقارير اليومية", path: "/app/construction/daily-reports", icon: "FileText", widget: true },
-    { key: "construction-quality": label: "Quality", labelAr: "الجودة", path: "/app/verticals/construction/quality", icon: "CheckCircle" },
+    { key: "construction-quality", label: "Quality", labelAr: "الجودة", path: "/app/verticals/construction/quality", icon: "CheckCircle" },
     { key: "construction-saudization", label: "Saudization", labelAr: "السعودة", path: "/app/construction/saudization", icon: "Users" },
     { key: "construction-compliance", label: "Compliance", labelAr: "الامتثال", path: "/app/construction/compliance/sbc", icon: "ShieldCheck" }
   ],

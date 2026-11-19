@@ -137,7 +137,7 @@ export default function PharmacyPOS() {
         },
         {
           name: "Paracetamol 500mg",
-          dosage": "1-2 tablets every 6 hours as needed",
+          dosage: "1-2 tablets every 6 hours as needed",
           quantity: 20,
           instructions: "For fever or pain relief"
         }

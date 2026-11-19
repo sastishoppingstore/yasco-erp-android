@@ -566,7 +566,8 @@ export default function WholesalePOS() {
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </>
+              )}
                 </CardContent>
                 <CardFooter className="flex justify-end">
                   <Button 
@@ -620,7 +621,7 @@ export default function WholesalePOS() {
                         
                         <div className="border-t pt-3">
                           <div className="text-sm">
-                            <div className="font-medium">Payment Terms:</span>
+                            <div className="font-medium">Payment Terms:</div>
                             <div className="text-right">
                               Net 30 Days
                             </div>
@@ -637,7 +638,7 @@ export default function WholesalePOS() {
                         
                         <div className="border-t pt-3">
                           <div className="text-sm">
-                            <div className="font-medium">Last Payment:</span>
+                            <div className="font-medium">Last Payment:</div>
                             <div className="text-right">
                               2026-06-15
                             </div>
@@ -649,6 +650,7 @@ export default function WholesalePOS() {
                             </div>
                           </div>
                         </div>
+                      </div>
                       </>
                     ) : (
                       <div className="text-center py-6 text-sm text-muted-foreground">
@@ -679,7 +681,7 @@ export default function WholesalePOS() {
                             <div className="text-sm text-muted-foreground">Prepare for warehouse</div>
                           </div>
                         </div>
-                      </div>
+                      </Button>
                       
                       <div className="border-t pt-3">
                         <Button 
@@ -722,8 +724,6 @@ export default function WholesalePOS() {
               </div>
             </div>
           </div>
-        </div>
-      </div>
     </div>
   );
 }
