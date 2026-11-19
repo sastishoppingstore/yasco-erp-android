@@ -11,12 +11,7 @@ import {
 import { eq, sql, and, like, or, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { onInvoiceCreated, onPaymentReceived } from "./lib/notifications/events";
-import {
-  finalizeZatcaInvoice,
-  sellerFromSettings,
-  buyerFromInvoice,
-  type ZatcaLineInput,
-} from "./lib/zatca/phase2";
+import { buildAndPersistInvoice, signInvoiceSafely } from "./lib/zatca/invoicePipeline";
 
 function encodeZatcaTlv(tag: number, value: string): Uint8Array {
   const encoder = new TextEncoder();
@@ -198,7 +193,6 @@ export const salesRouter = createRouter({
         notes: input.notes,
         // CR number lives in two columns (cr_number + commercial_registration);
         // keep both in sync so every screen (cards, invoices, prints) sees it.
-        crNumber: input.crNumber || null,
         commercialRegistration: input.crNumber || null,
       }).$returningId();
       return { id, success: true };
@@ -421,6 +415,7 @@ export const salesRouter = createRouter({
       customerId: z.number().optional(),
       date: z.string(),
       dueDate: z.string().optional(),
+      supplyDate: z.string().optional(),
       subTotal: z.string(),
       taxAmount: z.string().optional(),
       taxPercent: z.string().optional(),
@@ -453,6 +448,10 @@ export const salesRouter = createRouter({
         unit: z.string().optional(),
         sku: z.string().optional(),
         taxPercent: z.string().optional(),
+        taxCategory: z.enum(["S", "E", "Z", "O"]).optional(),
+        exemptionReason: z.string().optional(),
+        exemptionReasonCode: z.string().optional(),
+        discountPercent: z.string().optional(),
         totalAmount: z.string(),
       })),
     }))
@@ -509,7 +508,7 @@ export const salesRouter = createRouter({
       const isAboveThreshold = totalSales > ZATCA_THRESHOLD;
 
       // If above threshold, force ZATCA even if not Saudi company
-      let invoiceType: string;
+      let invoiceType: "standard" | "simplified" | "zatca";
       if (isAboveThreshold) {
         // ZATCA mandatory above threshold
         if (isValidSaudiVatNumber(vatNumber) && sellerName.trim()) {
@@ -625,6 +624,7 @@ export const salesRouter = createRouter({
         customerId: resolvedCustomerId,
         date: invoiceData.date,
         dueDate: invoiceData.dueDate || null,
+        supplyDate: invoiceData.supplyDate || invoiceData.date,
         subTotal: invoiceData.subTotal,
         taxAmount,
         taxPercent,
@@ -661,6 +661,10 @@ export const salesRouter = createRouter({
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           taxPercent: item.taxPercent,
+          taxCategory: item.taxCategory || (Number(item.taxPercent) === 0 ? "Z" : "S"),
+          exemptionReason: item.exemptionReason || null,
+          exemptionReasonCode: item.exemptionReasonCode || null,
+          discountPercent: item.discountPercent || "0",
           totalAmount: item.totalAmount,
           unit: item.unit,
           sku: item.sku || null,
@@ -761,39 +765,13 @@ export const salesRouter = createRouter({
         console.error("[notify] onInvoiceCreated error:", err)
       );
 
-      // ---- ZATCA Phase 2 finalisation (single pipeline) ----
-      // Generates UUID + ICV + PIH + UBL 2.1 + XAdES signature + 9-tag QR and
-      // stores every artefact. It also reconciles header totals to line totals
-      // so BR-CO-15 / BR-S-08 cannot drift by 0.01 SAR.
+      // ---- ZATCA Phase 2 finalisation (single shared pipeline) ----
+      // Loads the persisted invoice + lines + settings, allocates ICV/PIH,
+      // builds UBL 2.1, signs (XAdES-B-B), builds the QR and stores every
+      // artefact. Failing here must never lose the sale: the invoice stays
+      // draft and the retry worker re-signs it.
       if (isZatcaInvoice) {
-        try {
-          const lines: ZatcaLineInput[] = items.map((item) => ({
-            description: item.description,
-            descriptionAr: item.descriptionAr,
-            quantity: Number(item.quantity) || 0,
-            unitPrice: item.unitPrice,
-            taxPercent: item.taxPercent ?? taxPercent,
-            taxCategory: Number(item.taxPercent ?? taxPercent) === 0 ? "Z" : "S",
-            unitCode: "PCE",
-          }));
-          await finalizeZatcaInvoice({
-            tenantId,
-            invoiceId: id,
-            documentType: invoiceData.customerVat ? "standard" : "simplified",
-            invoiceNumber: invoiceData.invoiceNumber,
-            issueDate: invoiceData.date,
-            issueTime: invoiceData.time || undefined,
-            currency,
-            seller: sellerFromSettings(settings),
-            buyer: buyerFromInvoice(invoiceData, null),
-            lines,
-            headerDiscount: invoiceData.discountAmount,
-            paymentType: invoiceData.paymentType,
-            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
-          });
-        } catch (zatcaError) {
-          console.error("[zatca] Phase 2 finalisation failed for invoice", id, zatcaError);
-        }
+        await signInvoiceSafely({ tenantId, invoiceId: id });
       }
 
       return { id, success: true };
@@ -829,6 +807,7 @@ export const salesRouter = createRouter({
       workedMonth: z.string().optional(),
       date: z.string().optional(),
       dueDate: z.string().optional(),
+      supplyDate: z.string().optional(),
       subTotal: z.string().optional(),
       discountAmount: z.string().optional(),
       shippingAmount: z.string().optional(),
@@ -846,6 +825,10 @@ export const salesRouter = createRouter({
         quantity: z.number(),
         unitPrice: z.string(),
         taxPercent: z.string().optional(),
+        taxCategory: z.enum(["S", "E", "Z", "O"]).optional(),
+        exemptionReason: z.string().optional(),
+        exemptionReasonCode: z.string().optional(),
+        discountPercent: z.string().optional(),
         totalAmount: z.string(),
         unit: z.string().optional(),
         sku: z.string().optional(),
@@ -995,7 +978,6 @@ export const salesRouter = createRouter({
         zatcaStatus,
         balanceDue: newBalance.toFixed(2),
         status: nextStatus as any,
-        updatedAt: new Date(),
       }).where(eq(invoices.id, invoiceId));
 
       const oldItemRows = await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
@@ -1054,37 +1036,10 @@ export const salesRouter = createRouter({
         }
       }
 
-      // Re-sign after an edit (only pending invoices reach this point — the
-      // guard above blocks reported/cleared rows).
+      // Re-sign after an edit (only unsigned invoices reach this point — the
+      // guard above blocks cleared/reported/rejected rows).
       if (invoiceType === "zatca" || invoiceType === "simplified") {
-        try {
-          const finalLines: ZatcaLineInput[] = (items ?? oldItemRows).map((item: any) => ({
-            description: item.description || "Item",
-            descriptionAr: item.descriptionAr,
-            quantity: Number(item.quantity) || 0,
-            unitPrice: item.unitPrice,
-            taxPercent: item.taxPercent ?? taxPercent,
-            taxCategory: Number(item.taxPercent ?? taxPercent) === 0 ? "Z" : "S",
-            unitCode: item.unit || "PCE",
-          }));
-          await finalizeZatcaInvoice({
-            tenantId,
-            invoiceId,
-            documentType: (invoiceData.customerVat || existingInvoice.customerVat) ? "standard" : "simplified",
-            invoiceNumber: invoiceData.invoiceNumber || existingInvoice.invoiceNumber,
-            issueDate: invoiceData.date || existingInvoice.date,
-            issueTime: invoiceData.time || existingInvoice.time || undefined,
-            currency,
-            seller: sellerFromSettings(settings),
-            buyer: buyerFromInvoice({ ...existingInvoice, ...invoiceData }, null),
-            lines: finalLines,
-            headerDiscount: invoiceData.discountAmount,
-            paymentType: invoiceData.paymentType || existingInvoice.paymentMethod,
-            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
-          });
-        } catch (zatcaError) {
-          console.error("[zatca] Phase 2 re-finalisation failed for invoice", invoiceId, zatcaError);
-        }
+        await signInvoiceSafely({ tenantId, invoiceId });
       }
 
       await db.insert(auditLogs).values({
@@ -1285,28 +1240,15 @@ export const salesRouter = createRouter({
         });
 
         if (original) {
-          await finalizeZatcaInvoice({
+          await buildAndPersistInvoice({
             tenantId,
             invoiceId: cnInvoiceId,
             documentType: "credit_note",
-            invoiceNumber: cnNumber,
-            issueDate: input.date,
-            currency: settings?.defaultCurrency || "SAR",
-            seller: sellerFromSettings(settings),
-            buyer: buyerFromInvoice(original, null),
-            lines: [{
-              description: head || "Credit note",
-              quantity: 1,
-              unitPrice: net.toFixed(2),
-              taxPercent: 15,
-              taxCategory: "S",
-            }],
             billingReference: {
               id: original.invoiceNumber,
               uuid: originalStatus?.invoiceUuid || undefined,
             },
             instructionNote: head || "Credit note",
-            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
           });
         }
       } catch (zatcaError) {

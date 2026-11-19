@@ -4,7 +4,7 @@ import { getDb } from "./queries/connection";
 import * as schema from "@db/schema";
 import { and, eq, gte, inArray, sql, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { finalizeZatcaInvoice, sellerFromSettings, buyerFromInvoice } from "./lib/zatca/phase2";
+import { signInvoiceSafely } from "./lib/zatca/invoicePipeline";
 
 const SYNCABLE_TABLES = [
   "products", "customers", "suppliers", "invoices", "invoiceItems",
@@ -107,42 +107,12 @@ async function createSyncedPosSale(
 
   // Offline B2C must still be a valid Phase-2 invoice. Sign now, queue for
   // reporting within 24h (ICV/PIH stay in the same tenant chain).
-  try {
-    const [settings] = await db.select().from(schema.companySettings)
-      .where(eq(schema.companySettings.tenantId, tenantId)).limit(1);
-    const customer = await db.query.customers.findFirst({
-      where: and(eq(schema.customers.tenantId, tenantId), eq(schema.customers.id, customerId)),
-    });
-    await finalizeZatcaInvoice({
-      tenantId,
-      invoiceId,
-      documentType: "simplified",
-      invoiceNumber,
-      issueDate: payload.saleDate || new Date().toISOString().split("T")[0],
-      currency: settings?.defaultCurrency || "SAR",
-      seller: sellerFromSettings(settings),
-      buyer: buyerFromInvoice({
-        customerName: payload.customerName,
-        customerNameAr: payload.customerNameAr,
-        customerVat: payload.customerVat,
-        customerPhone: payload.customerPhone,
-      }, customer),
-      lines: (payload.items || []).map((item: any) => ({
-        description: item.productName || item.description || "POS Sale",
-        quantity: Number(item.quantity) || 1,
-        unitPrice: item.price ?? item.unitPrice ?? 0,
-        discount: item.discount ?? 0,
-        taxPercent: item.taxRate ?? 15,
-        taxCategory: Number(item.taxRate ?? 15) === 0 ? "Z" : "S",
-      })),
-      headerDiscount: payload.discount ?? payload.discountAmount,
-      paymentType: payload.paymentMethod,
-      environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
-      offline: true,
-    });
-  } catch (zatcaError) {
-    console.error("[zatca] offline sync finalisation failed for invoice", invoiceId, zatcaError);
-  }
+  await signInvoiceSafely({
+    tenantId,
+    invoiceId,
+    documentType: "simplified",
+    offline: true,
+  });
 
   if (Number(paidAmount) > 0) {
     const lastTx = await db.select({ bal: schema.cashboxTransactions.balanceAfter })

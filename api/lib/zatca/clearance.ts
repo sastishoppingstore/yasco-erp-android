@@ -180,6 +180,8 @@ export async function submitInvoice(params: {
         Accept: "application/json",
         Authorization: `Basic ${Buffer.from(`${accessToken}:${secretToken}`).toString("base64")}`,
         "Accept-Version": "V2",
+        // Stable per invoice+document, so a network retry cannot double-post.
+        "Idempotency-Key": `${statusRow?.invoiceUuid || `inv-${params.invoiceId}`}-${xmlDoc.xmlHash || ""}`.slice(0, 128),
       },
       body: JSON.stringify(payload),
     });
@@ -214,9 +216,14 @@ export async function submitInvoice(params: {
     if (res.ok) {
       // 200 = accepted. 202 = accepted with warnings (still a success, but the
       // warnings must be persisted so the operator can act on them).
+      const withWarnings = acceptedWithWarnings;
       const zatcaStatus: SubmissionStatus = params.mode === "clearance" ? "cleared" : "reported";
       const resolvedClearanceStatus = clearanceStatusHeader
         || (params.mode === "clearance" ? (acceptedWithWarnings ? "CLEARED_WITH_WARNINGS" : "CLEARED") : (acceptedWithWarnings ? "REPORTED_WITH_WARNINGS" : "REPORTED"));
+      const submissionStatus =
+        params.mode === "clearance"
+          ? (withWarnings ? "cleared_with_warnings" : "cleared")
+          : (withWarnings ? "reported_with_warnings" : "reported");
       const updateData: Record<string, unknown> = {
         status: zatcaStatus,
         zatcaRequestId: (responseData.requestId as string) || (responseData.requestID as string),
@@ -240,14 +247,42 @@ export async function submitInvoice(params: {
           .where(eq(zatcaInvoiceStatus.id, statusRow.id));
       }
 
-      const clearedXml = responseData.clearedInvoice as string | undefined;
+      // Mirror the outcome onto the invoice row (status-only update; the
+      // signed legal content stays immutable — see migration 0023 triggers).
+      await db.update(invoices)
+        .set({
+          submissionStatus: submissionStatus as any,
+          zatcaStatus: params.mode === "clearance" ? "cleared" : "reported",
+          ...(params.mode === "clearance" ? { clearedAt: new Date() } : { reportedAt: new Date() }),
+        })
+        .where(and(eq(invoices.id, params.invoiceId), eq(invoices.tenantId, params.tenantId)));
+
+      const clearedInvoiceRaw = responseData.clearedInvoice as string | undefined;
+      const clearedXml = clearedInvoiceRaw
+        ? (clearedInvoiceRaw.trim().startsWith("<")
+            ? clearedInvoiceRaw
+            : Buffer.from(clearedInvoiceRaw, "base64").toString("utf8"))
+        : undefined;
+
       if (clearedXml && params.mode === "clearance" && xmlDoc) {
         await db.update(zatcaXmlDocuments)
           .set({ clearedXml })
           .where(eq(zatcaXmlDocuments.id, xmlDoc.id));
 
+        // ZATCA applies the official QR (all 9 tags, including its own
+        // signature) at clearance. Print/PDF must use THAT QR, never a fake.
+        const clearedQr = (() => {
+          const m = clearedXml.match(
+            /<cac:AdditionalDocumentReference>\s*<cbc:ID>\s*QR\s*<\/cbc:ID>[\s\S]*?<cbc:EmbeddedDocumentBinaryObject[^>]*>([\s\S]*?)<\/cbc:EmbeddedDocumentBinaryObject>/i,
+          );
+          return m ? m[1].trim() : undefined;
+        })();
+
         await db.update(invoices)
-          .set({ zatcaXml: clearedXml, zatcaStatus: "cleared" })
+          .set({
+            zatcaXml: clearedXml,
+            ...(clearedQr ? { qrPhase2: clearedQr, zatcaQrCode: clearedQr } : {}),
+          })
           .where(and(eq(invoices.id, params.invoiceId), eq(invoices.tenantId, params.tenantId)));
       }
 
@@ -293,6 +328,10 @@ export async function submitInvoice(params: {
         })
         .where(eq(zatcaInvoiceStatus.id, statusRow.id));
     }
+
+    await db.update(invoices)
+      .set({ submissionStatus: "rejected" })
+      .where(and(eq(invoices.id, params.invoiceId), eq(invoices.tenantId, params.tenantId)));
 
     return {
       status: isRejected ? "rejected" : "failed",

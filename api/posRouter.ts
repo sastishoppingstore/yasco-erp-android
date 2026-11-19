@@ -4,11 +4,11 @@ import { getDb } from "./queries/connection";
 import {
   products, customers, invoices, invoiceItems, inventoryBalances,
   salesOrders, salesOrderItems, salesQuotations, salesQuotationItems,
-  posSessions, posHolds, cashboxTransactions, chartOfAccounts, companySettings,
+  posSessions, posHolds, cashboxTransactions, chartOfAccounts
 } from "@db/schema";
 import { eq, and, like, desc, sql, gte, lte, inArray } from "drizzle-orm";
 import { onInvoiceCreated, checkLowStockAndNotify } from "./lib/notifications/events";
-import { finalizeZatcaInvoice, sellerFromSettings, buyerFromInvoice } from "./lib/zatca/phase2";
+import { signInvoiceSafely } from "./lib/zatca/invoicePipeline";
 
 async function getOrCreateWalkInCustomer(db: ReturnType<typeof getDb>, tenantId: number) {
   const existing = await db.query.customers.findFirst({
@@ -231,39 +231,7 @@ export const posRouter = createRouter({
       // ---- ZATCA Phase 2: POS is a B2C channel, so every sale is a
       // simplified invoice with a 9-tag QR, UUID, ICV and signature. ----
       if (input.invoiceType !== "non_zatca") {
-        try {
-          const settings = await db.query.companySettings.findFirst({
-            where: eq(companySettings.tenantId, tenantId),
-          });
-          const customer = await db.query.customers.findFirst({
-            where: and(eq(customers.id, customerId), eq(customers.tenantId, tenantId)),
-          });
-          await finalizeZatcaInvoice({
-            tenantId,
-            invoiceId,
-            documentType: "simplified",
-            invoiceNumber,
-            issueDate: invoiceData.date,
-            currency: settings?.defaultCurrency || "SAR",
-            seller: sellerFromSettings(settings),
-            buyer: buyerFromInvoice({ customerName: customer?.name, customerNameAr: customer?.nameAr }, customer),
-            lines: items.map((item: any) => ({
-              description: item.description || "POS Sale",
-              quantity: Number(item.quantity) || 0,
-              unitPrice: item.unitPrice,
-              discount: item.discount,
-              taxPercent: item.taxRate ?? "15",
-              taxCategory: Number(item.taxRate ?? 15) === 0 ? "Z" : "S",
-              unitCode: "PCE",
-            })),
-            headerDiscount: invoiceData.discountAmount,
-            paymentType: input.paymentMethod,
-            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
-            egsDeviceId: null,
-          });
-        } catch (zatcaError) {
-          console.error("[zatca] POS finalisation failed for invoice", invoiceId, zatcaError);
-        }
+        await signInvoiceSafely({ tenantId, invoiceId, documentType: "simplified" });
       }
 
       onInvoiceCreated(tenantId, invoiceId).catch((err) =>

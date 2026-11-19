@@ -207,7 +207,7 @@ export async function generateInvoicePdf(data: InvoiceData): Promise<Buffer> {
             doc
               .fontSize(8)
               .font("Helvetica")
-              .text("ZATCA Compliant", col1, currentY + 160, {
+              .text("E-invoice QR", col1, currentY + 160, {
                 width: 150,
                 align: "center",
               });

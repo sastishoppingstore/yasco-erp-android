@@ -4,6 +4,7 @@ import {
   varchar,
   text,
   mediumtext,
+  longtext,
   time,
   timestamp,
   bigint,
@@ -784,6 +785,9 @@ export const salesQuotationItems = mysqlTable("sales_quotation_items", {
   unitPrice: decimal("unit_price", { precision: 18, scale: 4 }).notNull(),
   discountPercent: decimal("discount_percent", { precision: 5, scale: 2 }).default("0").notNull(),
   taxPercent: decimal("tax_percent", { precision: 5, scale: 2 }).default("15").notNull(),
+  taxCategory: mysqlEnum("tax_category", ["S", "E", "Z", "O"]).default("S").notNull(),
+  exemptionReason: varchar("exemption_reason", { length: 255 }),
+  exemptionReasonCode: varchar("exemption_reason_code", { length: 20 }),
   totalAmount: decimal("total_amount", { precision: 18, scale: 4 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -830,6 +834,7 @@ export const invoices = mysqlTable("invoices", {
   orderId: bigint("order_id", { mode: "number", unsigned: true }),
   date: date("date", { mode: "string" }).notNull(),
   dueDate: date("due_date", { mode: "string" }),
+  supplyDate: date("supply_date", { mode: "string" }),
   time: varchar("time", { length: 10 }),
   subTotal: decimal("sub_total", { precision: 18, scale: 4 }).default("0").notNull(),
   discountAmount: decimal("discount_amount", { precision: 18, scale: 4 }).default("0").notNull(),
@@ -842,6 +847,20 @@ export const invoices = mysqlTable("invoices", {
   zatcaQrCode: text("zatca_qr_code"),
   zatcaXml: text("zatca_xml"),
   zatcaStatus: mysqlEnum("zatca_status", ["pending", "reported", "cleared"]),
+  // ---- ZATCA Phase 2 legal artefacts (additive, nullable) ----
+  uuid: varchar("uuid", { length: 36 }),
+  invoiceHash: varchar("invoice_hash", { length: 255 }),
+  previousInvoiceHash: varchar("previous_invoice_hash", { length: 255 }),
+  icv: bigint("icv", { mode: "number", unsigned: true }),
+  egsDeviceId: varchar("egs_device_id", { length: 100 }).default("default"),
+  signedXml: longtext("signed_xml"),
+  qrPhase2: text("qr_phase2"),
+  submissionStatus: mysqlEnum("submission_status", [
+    "draft", "signed", "submitted", "cleared", "cleared_with_warnings",
+    "reported", "reported_with_warnings", "rejected",
+  ]).default("draft"),
+  clearedAt: timestamp("cleared_at"),
+  reportedAt: timestamp("reported_at"),
   customerName: varchar("customer_name", { length: 255 }),
   customerNameAr: varchar("customer_name_ar", { length: 255 }),
   customerPhone: varchar("customer_phone", { length: 50 }),
@@ -864,6 +883,8 @@ export const invoices = mysqlTable("invoices", {
   tenantIdx: index("inv_tenant_idx").on(table.tenantId),
   dateIdx: index("inv_date_idx").on(table.date),
   numIdx: uniqueIndex("inv_num_idx").on(table.tenantId, table.invoiceNumber),
+  tenantUuidIdx: uniqueIndex("inv_tenant_uuid_uidx").on(table.tenantId, table.uuid),
+  tenantEgsIcvIdx: uniqueIndex("inv_tenant_egs_icv_uidx").on(table.tenantId, table.egsDeviceId, table.icv),
 }));
 
 export const invoiceItems = mysqlTable("invoice_items", {

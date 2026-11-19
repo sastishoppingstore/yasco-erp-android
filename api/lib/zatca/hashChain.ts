@@ -16,7 +16,12 @@ import { zatcaInvoiceStatus } from "@db/schema";
  * MAX(icv)+1). These helpers exist for callers that need the same semantics.
  */
 
-export const EMPTY_HASH = createHash("sha256").update("0").digest("base64");
+/**
+ * ZATCA fixed seed for the first invoice: base64 of the HEX STRING of
+ * SHA-256("0"), not base64 of the raw digest.
+ */
+export const EMPTY_HASH =
+  "NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==";
 
 function sha256Base64(value: string): string {
   return createHash("sha256").update(value, "utf-8").digest("base64");
