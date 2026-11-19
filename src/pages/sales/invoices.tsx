@@ -13,6 +13,7 @@ import { generateInvoiceHtml, zatcaQrPayload } from "@/lib/invoiceHtml";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { ImageUpload } from "@/components/ui/ImageUpload";
+import SharedInvoiceForm from "@/components/invoice/SharedInvoiceForm";
 
 type CartItem = { id: string; name: string; nameAr?: string; price: number; qty: number; sku?: string; discountPercent?: number; unit?: string };
 type InvoiceMode = "product" | "service" | "construction";
@@ -731,145 +732,13 @@ export default function InvoicesPage() {
 
       <div className="flex-1 flex overflow-hidden min-h-0 h-[calc(100dvh-250px)] min-h-[520px]">
         {viewTab === "create" && (
-        <div className="flex-1 flex min-h-0 w-full overflow-x-auto">
-          {/* Left: Customer Details */}
-          <div className="w-72 border-r bg-white p-3 pb-10 space-y-2 overflow-y-auto flex-none min-h-0">
-            <div className="relative" ref={custRef}>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Customer / العميل</Label>
-              <Input value={customerName} onChange={e => { setCustomerName(e.target.value); setCustDropdownOpen(true); }} onFocus={() => setCustDropdownOpen(true)} placeholder="Type customer name..." className="h-7 text-xs" />
-              {custDropdownOpen && filteredCustomers.length > 0 && (
-                <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                  {filteredCustomers.map(c => (
-                    <button key={c.id} type="button" onClick={() => selectCustomer(c)} className="w-full text-left px-2 py-1.5 hover:bg-blue-50 border-b border-gray-100 last:border-0">
-                      <div className="text-xs font-semibold text-slate-700">{c.name}{c.nameAr ? ` / ${c.nameAr}` : ''}</div>
-                      <div className="text-[10px] text-slate-500">{c.phone || ''} {(c.vatNumber || (c as any).taxNumber) ? `• VAT: ${c.vatNumber || (c as any).taxNumber}` : ''}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Customer Name (Arabic) / اسم العميل</Label>
-              <Input dir="rtl" value={customerNameAr} onChange={e => setCustomerNameAr(e.target.value)} placeholder="اسم العميل..." className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Phone</Label>
-              <Input value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="+966..." className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Address</Label>
-              <Input value={customerAddress} onChange={e => setCustomerAddress(e.target.value)} placeholder="Address..." className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Address (Arabic) / العنوان بالعربي</Label>
-              <Input dir="rtl" value={customerAddressAr} onChange={e => setCustomerAddressAr(e.target.value)} placeholder="العنوان بالعربي..." className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">VAT No</Label>
-              <Input value={customerVat} onChange={e => setCustomerVat(e.target.value)} placeholder="300000000000003" className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">CR No</Label>
-              <Input value={customerCr} onChange={e => setCustomerCr(e.target.value)} placeholder="CR number" className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Email (auto-send bill)</Label>
-              <Input type="email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} placeholder="customer@email.com" className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Notes / ملاحظات</Label>
-              <Input value={note} onChange={e => setNote(e.target.value)} placeholder="Additional notes..." className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Notes (Arabic) / ملاحظات إضافية</Label>
-              <Input dir="rtl" value={noteAr} onChange={e => setNoteAr(e.target.value)} placeholder="ملاحظات إضافية..." className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Discount</Label>
-              <Input type="number" className="w-20 h-7 text-xs text-right" value={discount} onChange={e => setDiscount(parseFloat(e.target.value) || 0)} />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Worked Month / الشهر</Label>
-              <Input type="month" value={workedMonth} onChange={e => setWorkedMonth(e.target.value)} className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Payment / الدفع</Label>
-              <select value={paymentType} onChange={e => setPaymentType(e.target.value)} className="h-7 text-xs border rounded w-full px-2">
-                <option value="Credit">Credit</option>
-                <option value="Cash">Cash</option>
-              </select>
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Cashier / الكاشير</Label>
-              <Input value={cashier} onChange={e => setCashier(e.target.value)} className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">Due Date / تاريخ الاستحقاق</Label>
-              <Input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="h-7 text-xs" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-600 block mb-1">PO No / رقم طلب الشراء</Label>
-              <Input value={poNo} onChange={e => setPoNo(e.target.value)} placeholder="PO Number" className="h-7 text-xs" />
-            </div>
-          </div>
-
-          {/* Center: Products */}
-          <div className="flex-1 p-3 overflow-y-auto min-h-0 min-w-[220px]">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-semibold text-slate-500 uppercase">Products / المنتجات</h3>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => { setAddItemDialogOpen(true); }}>
-                <Plus className="h-3.5 w-3.5 mr-1" /> Add Item / اضافة بند
-              </Button>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-              {products?.map(p => (
-                <button key={p.id} onClick={() => addToCart(p as any)}
-                  className="border-2 border-slate-200 rounded-lg p-2 text-left hover:border-blue-400 hover:shadow-md transition-all">
-                  <div className="text-xs font-bold text-slate-700 truncate">{p.name}</div>
-                  <div className="text-xs text-slate-500">{p.sku}</div>
-                  <div className="text-sm font-bold text-blue-600">{currency} {Number(p.salePrice).toFixed(2)}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Right: Cart Summary with Sticky Footer */}
-          <div className="w-80 border-l bg-white flex flex-col flex-none min-h-0">
-            <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
-              <h3 className="font-semibold text-slate-800 text-sm">Cart</h3>
-              {cart.length === 0 ? (
-                <p className="text-xs text-slate-400 text-center py-8">No items in cart</p>
-              ) : cart.map((item, i) => (
-                <div key={i} className="p-2 bg-slate-50 rounded text-xs space-y-1">
-                  <div className="flex items-center gap-2">
-                    <input className="flex-1 border rounded px-1 py-0.5 text-xs" value={item.name}
-                      onChange={e => updateItemName(i, e.target.value)} title="Edit name" />
-                    <button onClick={() => removeItem(i)} className="text-red-500 hover:text-red-700" title="Remove">×</button>
-                  </div>
-                  {item.nameAr && <div dir="rtl" className="text-[11px] text-slate-500">{item.nameAr}</div>}
-                  <div className="flex items-center gap-1 text-[11px]">
-                    <span>Qty / الكمية:</span>
-                    <input type="number" min={1} value={String(item.qty)} onFocus={e => { if (e.target.value === "1") e.target.select(); }} onChange={e => { const raw = e.target.value.replace(/^0+(?=\d)/, ""); const v = Math.max(1, parseInt(raw) || 1); setCart(prev => prev.map((it, j) => j === i ? { ...it, qty: v } : it)); }} className="w-12 border rounded px-1 py-0.5 text-right" />
-                    <span>Rate/Hour / سعر الساعة:</span>
-                    <input type="number" min={0} placeholder="0" value={Number.isNaN(item.price) ? "" : item.price} onFocus={e => e.target.select()} onChange={e => updatePrice(i, e.target.value)} className="w-16 border rounded px-1 py-0.5 text-right" />
-                    <span className="ml-auto font-bold">{(safePrice(item.price) * item.qty).toFixed(2)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {/* Sticky Footer - INSIDE the cart column */}
-            <div className="flex-none border-t bg-white p-3 pb-5 shadow-md z-10">
-              <div className="space-y-1 text-xs mb-3">
-                <div className="flex justify-between"><span className="text-slate-500">Subtotal:</span><span className="font-semibold">{currency} {subtotal.toFixed(2)}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500">VAT ({taxPercent}%):</span><span className="font-semibold">{currency} {vat.toFixed(2)}</span></div>
-                <div className="flex justify-between font-bold text-sm border-t pt-1"><span>TOTAL:</span><span>{currency} {total.toFixed(2)}</span></div>
-              </div>
-              <Button className="w-full" onClick={handleSubmit} disabled={createInvoice.isPending || updateInvoice.isPending || cart.length === 0}>
-                <Send className="h-4 w-4 mr-2" /> {editingInvoiceId ? "Update" : "Create Bill"}
-              </Button>
-            </div>
-          </div>
-        </div>
+          <SharedInvoiceForm
+            moduleKey="sales"
+            editId={editingInvoiceId}
+            onSaved={(id) => { setEditingInvoiceId(null); openViewInvoice(id); }}
+            onPrint={(id) => handlePrintInvoice(id, "pdf")}
+            onCancelEdit={() => { setEditingInvoiceId(null); }}
+          />
         )}
 
         {viewTab === "history" && (
