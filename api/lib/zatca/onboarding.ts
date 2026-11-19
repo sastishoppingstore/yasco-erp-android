@@ -97,11 +97,19 @@ export async function startOnboarding(params: {
   const csr = pki.createCertificationRequest();
   csr.publicKey = privKey.publicKey;
 
-  csr.setSubject([
-    { name: "commonName", value: params.commonName },
-    { name: "organizationName", value: params.organizationIdentifier || params.vatNumber },
-    { name: "countryName", value: "SA" },
-  ]);
+  // ZATCA Phase 2 CSR subject: CN, OU, O, C=SA, SN=EGS serial,
+    // UID=15-digit VAT, title=1100 (mandatory for B2B + B2C).
+    csr.setSubject([
+      { name: "commonName", value: params.commonName },
+      { name: "organizationalUnitName", value: "ZATCA EGS" },
+      { name: "organizationName", value: params.organizationIdentifier || params.vatNumber },
+      { name: "countryName", value: "SA" },
+      { name: "serialNumber", value: params.egsSerialNumber || params.commonName },
+      { name: "uid", value: params.vatNumber },
+      { name: "title", value: "1100" },
+      { name: "businessCategory", value: "ZATCA" } as any,
+      { type: "1.3.6.1.4.1.311.20.2.3", value: "ZATCA" } as any,
+    ] as any);
 
   csr.sign(privKey);
   const csrPem = forge.pki.certificationRequestToPem(csr);

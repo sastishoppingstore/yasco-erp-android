@@ -1,0 +1,898 @@
+================================================================================
+YASCO ERP  —  ZATCA PHASE 2 COMPREHENSIVE COMPLIANCE & FAULT-DETECTION AUDIT
+================================================================================
+Audit date        : 2026-11-19
+Audit mode        : READ-ONLY inspection (no code, DB, migration or config changed)
+Repository        : /home/ubuntu/yasco-erp-android
+Auditor role      : Senior ZATCA E-Invoicing QA & Security Auditor
+Standard basis    : ZATCA Fatoora Phase 2 (Security Features, UBL 2.1, QR TLV,
+                    Clearance/Reporting APIs, Solution Provider requirements)
+
+CONTENTS
+  PART 0  Executive verdict
+  PART 1  Readiness gap analysis (Done / Partial / Missing)
+  PART 2  Deep compliance QA audit (7 areas)
+          2.1 Critical faults & compliance blockers
+          2.2 Warnings & edge-case bugs
+          2.3 Passed checks
+          2.4 Actionable fix plan (P0 / P1 / P2)
+  PART 3  Ready vs remaining (summary)
+  PART 4  Ready-to-use fix prompt (copy/paste)
+  PART 5  Sandbox verification checklist
+  APPENDIX A  Evidence index (files & lines)
+
+IMPORTANT NOTE ON THE PREVIOUS REPORT
+  Corrected technical point: ZATCA Phase 2 uses ECDSA over curve secp256k1
+  (NOT NIST P-256). The repo's `generateKeyPair("ECDSA-SHA256")` already uses
+  secp256k1, which is correct. The failure is in HOW the signature is built,
+  not in the curve.
+================================================================================
+
+
+================================================================================
+PART 0 — EXECUTIVE VERDICT
+================================================================================
+
+The ERP has TWO PARALLEL ZATCA IMPLEMENTATIONS:
+
+  (A) REAL INVOICE FLOW  (what actually runs)
+      api/salesRouter.ts, api/posRouter.ts, api/syncRouter.ts,
+      api/zatcaCompleteRouter.ts, api/decorationRouter.ts
+      -> Phase-1 grade only: 5-tag TLV QR, minimal XML, no UUID,
+         no PIH/ICV, no XAdES signature. NOT ZATCA Phase 2 compliant.
+
+  (B) ADVANCED LIBRARY  (what should run, but is never called)
+      api/lib/zatca/xmlBuilder.ts, signingEngine.ts, hashChain.ts,
+      certificates.ts, onboarding.ts, clearance.ts, validator.ts,
+      archiving.ts, pdfGenerator.ts
+      -> Contains the correct concepts but several algorithms are wrong
+         (PIH seed, pseudo-signature, incomplete CSR) and no router uses it.
+
+RESULT: The system cannot pass a single ZATCA Phase 2 compliance test in its
+current wiring. Estimated readiness: 25–35% for Phase 2, ~85% for Saudi HR.
+
+Ready  : 15% VAT data model, bilingual A4 invoice template, RTL framework,
+         GOSI / WPS / EOSB / Iqama / Qiwa, encrypted credential storage,
+         offline mutation queue, real ZATCA endpoints + Accept-Version V2.
+Remains: invoice UUID, UBL export, PIH/ICV chain, XAdES ECDSA signing,
+         compliant CSR/CSID onboarding, 9-tag QR, working clearance/reporting,
+         credit/debit notes, POS + offline QR, pre-submission validation,
+         immutability locks, Riyadh timezone, payment gateways.
+
+
+================================================================================
+PART 1 — READINESS GAP ANALYSIS
+================================================================================
+
+LEGEND:  DONE = production-usable   PARTIAL = exists but incomplete/unwired
+         MISSING = not implemented
+
+--------------------------------------------------------------------------------
+A. ZATCA PHASE 2 (FATOORAH) E-INVOICING
+--------------------------------------------------------------------------------
+
+A1. UUID v4 per invoice ...................................... PARTIAL
+    - `invoices` table has NO uuid column:
+      db/schema.ts  L826-870
+    - UUID only in side table `zatcaInvoiceStatus.invoiceUuid`:
+      db/schema.ts  L2253-2275
+    - `randomUUID()` used only inside api/zatcaRouter.ts L190.
+    - api/salesRouter.ts, api/posRouter.ts L146, api/syncRouter.ts L63 never
+      store a UUID.
+    - `generateInvoiceUuid()` exists in
+      api/lib/zatca/completeImplementation.ts but the real flow doesn't call it.
+
+A2. UBL 2.1 XML (B2B + B2C) .................................. PARTIAL
+    - Real saved XML is minimal and invalid:
+      api/salesRouter.ts L42-71 `buildSaudiInvoiceXml`
+      * no cac:AccountingCustomerParty
+      * no cac:InvoiceLine
+      * no cac:TaxSubtotal / TaxCategory breakdown
+      * no cbc:IssueTime
+      * hardcoded `InvoiceTypeCode name="0100000">388` even for B2C
+      * no UUID / PIH / ICV / signature / QR
+    - api/zatcaRouter.ts L205-265 builds another minimal inline XML.
+    - api/lib/zatca/xmlBuilder.ts L95-291 is a good UBL builder — NEVER used.
+    - src/lib/zatca/invoiceXmlGenerator.ts L1-312 is a good alternative —
+      NEVER imported (0 references).
+    - No XSD validation in the pipeline; validator.ts exists but is unwired.
+
+A3. SHA-256 hash + PIH chain + ICV ........................... MISSING (scaffold)
+    - api/lib/zatca/hashChain.ts
+      * L6  `EMPTY_HASH = sha256("")`  -> WRONG seed.
+            ZATCA requires base64(SHA-256("0")) for the first invoice.
+      * L23 `computePih(prev, current) = sha256(prev + current)` -> WRONG.
+            PIH is simply the previous invoice's hash.
+      * getOrCreatePihChain / recordInvoiceHash not called by any router.
+    - ICV:
+      * `zatcaInvoiceStatus.invoiceCounter` is per-row, not a locked sequence.
+      * api/lib/zatca/xmlBuilder.ts puts a UUID into the ICV block.
+      * No DB transaction / SELECT ... FOR UPDATE -> duplicate ICV under
+        concurrency.
+
+A4. CSID / CSR / onboarding / ECDSA-X.509 signing ............. PARTIAL
+    - State machine exists: api/lib/zatca/onboarding.ts L11-50, L88-330.
+    - Cert storage + encryption: api/lib/zatca/certificates.ts L30-120.
+    - BUT:
+      * api/lib/zatca/certificates.ts L128-196 CSR has only
+        CN, O, C (+ optional email/SN/UID).
+        Missing: OU, title=1100, ZATCA OID extensions
+        (1.3.6.1.4.1.311.20.2.3, EGS serial, VAT, invoice type, branch).
+      * api/lib/zatca/onboarding.ts L100-105 CSR has only CN, O, C.
+      * api/lib/zatca/signingEngine.ts signs the WHOLE XML with node
+        `createSign`; no C14N, no SignedProperties digest, no XAdES-B-B.
+      * api/zatcaRouter.ts L205-265 injects a PSEUDO `<Signature>` block.
+      * `certificateHash` is derived from the PRIVATE KEY, not the certificate.
+      * `generateKeyPair` default RSA branch is selectable (wrong for ZATCA).
+
+A5. Phase 2 nine-tag TLV QR ................................... MISSING (real flow)
+    - Real flow = 5 tags only:
+      api/salesRouter.ts L24-47 + L536-541
+      api/taxComplianceRouter.ts L77 (same helper)
+      api/zatcaCompleteRouter.ts L302 `buildZatcaTlvQr` (5 tags)
+    - 9-tag builder exists: api/lib/zatca/xmlBuilder.ts L588-628
+      (`buildBase64QrPayload`) but only referenced by the dead pdfGenerator.
+    - api/zatcaRouter.ts fills tags 7-9 with placeholder strings.
+
+A6. Clearance API (B2B) + Reporting API (B2C) ................ PARTIAL (broken)
+    - Real endpoints + Basic auth + Accept-Version V2:
+      api/lib/zatca/clearance.ts L175-186
+    - Queue is BROKEN at runtime:
+      * api/queue/tax.queue.ts L36 calls submitInvoice(tenantId, invoiceId, mode)
+        but the real signature is an object:
+        api/lib/zatca/clearance.ts L108-114
+      * api/queue/tax.queue.ts L30 reads `credential.productionCsid`
+        — that column does not exist; schema has
+        `productionCsidEncrypted` (db/schema.ts L2213).
+    - api/taxComplianceRouter.ts L507-619 only SIMULATES readiness.
+    - No live clearance/reporting path works end-to-end.
+
+A7. Offline POS sync ......................................... PARTIAL
+    - `zatcaOfflineQueue` table exists: db/schema.ts L5241-5268
+      — ZERO code references (grep finds only the two schema files).
+    - Generic offline layer works:
+      src/lib/offline/mutationQueue.ts (ordered replay, Dexie)
+      src/lib/offline/offlineCache.ts
+      api/syncRouter.ts + api/lib/sync/{push,pull,deltaSync}Engine.ts
+    - Offline invoices created in api/syncRouter.ts L57-131 have
+      no QR / XML / UUID / hash.
+    - No device-side signing, no ICV reservation, no 24-hour reporting job.
+
+--------------------------------------------------------------------------------
+B. SAUDI TAX, LOCALIZATION, HR & PAYMENTS
+--------------------------------------------------------------------------------
+
+B1. 15% VAT + bilingual invoice .............................. DONE (display) /
+                                                               PARTIAL (data)
+    - Bilingual A4: src/pages/sales/SaudiInvoicePrint.tsx (QR L236-245)
+    - Bilingual A4 component: src/components/InvoicePrintTemplate.tsx
+      (VAT L138, L529; RTL blocks L104, L155, L206)
+    - PDF QR: api/services/pdfService.ts L202-213
+    - Thermal: api/thermalPrintRouter.ts L44-58,
+      api/lib/thermal/escpos.ts L93-190, pocket58.ts L1-40
+    - Gaps: thermal labels English-only ("VAT:"), no Arabic code page;
+      no reconciliation check that header VAT = sum(line VAT).
+
+B2. Arabic RTL UI ............................................ DONE (framework)
+                                                               PARTIAL (coverage)
+    - src/providers/language.tsx sets `dir`, `lang`, persists, auto-detects.
+    - i18n only 3 namespaces:
+      src/i18n/locales/ar.json / en.json
+      common (58 keys), navigation (16), construction (87)
+    - Most pages hardcode `isAr ? "..." : "..."` inline.
+
+B3. Saudi HR / payroll ....................................... DONE
+    - GOSI: api/lib/gosi.ts L1-226 (new/old system, expat, caps),
+      api/gosiRouter.ts, tables db/schema.ts L3921-3978
+    - WPS: api/lib/wps.ts L1-110 (8 bank formats, SARIE IBAN),
+      api/wpsRouter.ts, tables db/schema.ts L3981-4014
+    - EOSB: api/lib/eosb.ts L1-135 (Hijri/Gregorian tiers, vesting),
+      api/eosbRouter.ts, eosbAccruals
+    - Iqama: iqamaRecords db/schema.ts L4053+, expiry endpoints in
+      api/saudiComplianceRouter.ts, api/lib/muqeem.ts
+    - Qiwa: api/qiwaRouter.ts, api/lib/qiwa.ts, api/services/qiwaOAuth2Service.ts
+    - Only gap: WPS file generation, no bank/Mudad submission + acknowledgement.
+
+B4. Saudi payment gateways ................................... MISSING
+    - Only env presence checks: api/licenseAdminRouter.ts L394-400
+      (stripe, paytabs, hyperpay, moyasar)
+    - Descriptor only: api/lib/plugins/pluginRegistry.ts L62-66
+      (mada / stcpay / applepay / tap)
+    - No gateway client, no checkout, no webhook, no refund.
+    - Tabby / Tamara / STC Pay: no code at all.
+
+
+================================================================================
+PART 2 — DEEP COMPLIANCE QA AUDIT
+================================================================================
+
+================================================================================
+2.1 CRITICAL FAULTS & COMPLIANCE BLOCKERS
+    (each one will fail ZATCA Compliance Testing)
+================================================================================
+
+--------------------------------------------------------------------------------
+[C-01] The invoice table cannot store a Phase 2 invoice
+--------------------------------------------------------------------------------
+File : db/schema.ts  L826-870
+Fault: `invoices` has zatcaQrCode / zatcaXml / zatcaStatus but NO:
+       uuid, invoiceHash, previousInvoiceHash, icv, signedXml,
+       submissionStatus, clearedAt, reportedAt, qrPhase2.
+Impact: There is nowhere to persist the mandatory Phase 2 identity of an
+        invoice. Restarting the app or re-printing loses the legal record.
+        ZATCA audit (6-year retention) impossible.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-02] The XML that is actually generated is not valid UBL 2.1
+--------------------------------------------------------------------------------
+File : api/salesRouter.ts  L42-71  (buildSaudiInvoiceXml)
+        api/zatcaRouter.ts L205-265 (inline XML)
+Fault:
+  * No `cac:AccountingCustomerParty` (buyer) at all.
+  * No `cac:InvoiceLine` elements -> line totals cannot be validated.
+  * No `cac:TaxTotal/cac:TaxSubtotal` with taxable amount + category.
+  * No `cbc:IssueTime`.
+  * `InvoiceTypeCode name="0100000"` hardcoded, so B2C simplified invoices
+    are exported as standard B2B (wrong subtype 0100000 vs 0200000).
+  * No UUID, PIH, ICV, QR, signature extension.
+Impact: Fails BR-02, BR-06, BR-CO-10..15, BR-S-08..09, KSA-2/4/5 rules.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-03] QR code is Phase 1 (5 tags), not Phase 2 (9 tags)
+--------------------------------------------------------------------------------
+File : api/salesRouter.ts L24-47 (encoder), L536-541 (use),
+       api/taxComplianceRouter.ts L77,
+       api/zatcaCompleteRouter.ts L302
+Fault: Only tags 1-5 are emitted. Missing:
+       Tag 6 = SHA-256 XML hash (base64)
+       Tag 7 = ECDSA signature
+       Tag 8 = public key
+       Tag 9 = ZATCA stamp (B2B clearance)
+       api/zatcaRouter.ts L718 fills 7-9 with placeholder strings.
+Impact: Every QR printed on a B2B invoice is non-compliant; B2C QR lacks
+        hash/signature verification. ZATCA scanner rejects it.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-04] PIH and ICV chain is mathematically wrong and unused
+--------------------------------------------------------------------------------
+File : api/lib/zatca/hashChain.ts  L6, L22-26
+Fault:
+  * L6  EMPTY_HASH = SHA-256("") ; must be base64(SHA-256("0")).
+  * L24 PIH = SHA-256(prev + current) ; must be exactly `prev`.
+  * No sequential ICV allocation, no per-device counter, no transaction.
+  * Called by nobody.
+Impact: Chain verification fails from invoice #1 onward.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-05] Signing is not a ZATCA signature at all
+--------------------------------------------------------------------------------
+File : api/lib/zatca/signingEngine.ts  (whole file)
+       api/lib/zatca/xmlBuilder.ts     L518-586 (wrapWithExtensions)
+       api/zatcaRouter.ts              L205-265 (pseudo signature)
+Fault:
+  * `createSign("sha256")` over the entire XML string, no C14N 1.1.
+  * No `<xades:SignedProperties>` digest (the legal ZATCA requirement).
+  * `certificateHash` computed from the PRIVATE KEY (L22-24).
+  * Public key pushed into tag 8 raw, not the X.509 certificate.
+  * `api/zatcaRouter.ts` writes a decorative `<Signature>` block that is not
+    cryptographically bound to the document.
+Impact: Signature verification fails; tamper-evidence absent.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-06] CSR is not a ZATCA CSR -> onboarding will be rejected
+--------------------------------------------------------------------------------
+File : api/lib/zatca/certificates.ts L128-196
+       api/lib/zatca/onboarding.ts   L100-105
+Fault: Subject has only CN / O / C (and optionally SN/UID/email).
+       Missing mandatory ZATCA attributes:
+         OU, title = "1100", 15-digit UID (starts and ends with 3),
+         registered address, business category,
+         and the ZATCA custom OID extensions.
+Impact: `POST /compliance` rejects the CSR; no CCSID -> no PCSID.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-07] Compliance Testing is simulated locally, never sent to ZATCA
+--------------------------------------------------------------------------------
+File : api/lib/zatca/onboarding.ts L236-265 (recordComplianceTestResult)
+       api/zatcaRouter.ts        L790-805 (readiness payload)
+       api/taxComplianceRouter.ts L507-619
+Fault: Results are written to local arrays/tables; no HTTP call to the
+       ZATCA compliance endpoint. `completeOnboarding` accepts a PCSID PEM
+       as plain input instead of exchanging a CCSID.
+Impact: Solution-provider / device onboarding cannot be approved.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-08] Clearance/ Reporting worker crashes at runtime
+--------------------------------------------------------------------------------
+File : api/queue/tax.queue.ts L30, L36
+       api/lib/zatca/clearance.ts L108-114
+       db/schema.ts L2204-2224
+Fault:
+  * L36 passes 3 positional args, function expects one object.
+  * L30 reads `credential.productionCsid`; column is
+    `productionCsidEncrypted`.
+Impact: Any ZATCA job throws TypeError / undefined. Live submission is dead.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-09] Credit / Debit notes are not e-invoices
+--------------------------------------------------------------------------------
+File : api/salesRouter.ts L1109-1180 (creditNoteCreate)
+       api/lib/zatca/xmlBuilder.ts L191, L292-415, L416-517
+Fault:
+  * Writes only to `creditNotes` (L1135-1148): number, amount, reason.
+    No invoice row, no UUID, no XML, no QR, no signature.
+  * `invoiceId` defaults to 0 when absent -> no BillingReference.
+  * UBL credit/debit builders exist but have NO callers.
+  * xmlBuilder L191 puts the CUSTOMER VAT NUMBER in BillingReference ID
+    (must be the original invoice ID / UUID).
+  * Hardcoded `CreditNoteTypeCode name="0200000"` (L351) and
+    `DebitNoteTypeCode name="0300000"` (L471) — wrong for B2B, and 0300000
+    is not a valid ZATCA invoice-type name.
+Impact: All 4 note types (B2B/B2C credit + debit) fail compliance tests.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-10] POS sales generate no ZATCA data at all
+--------------------------------------------------------------------------------
+File : api/posRouter.ts L128-145 (input), L146-245 (mutation)
+Fault:
+  * `invoiceType: z.enum(["zatca","non_zatca"])` is accepted (L135) but
+    IGNORED — the insert hardcodes `invoiceType: "simplified"` (L173).
+  * No zatcaQrCode, no zatcaXml, no UUID, no hash on insert.
+  * Marks `status: "paid"` immediately -> becomes effectively immutable.
+Impact: Highest-volume B2C channel is 100% non-compliant.
+Severity: BLOCKER (for retail tenants).
+
+--------------------------------------------------------------------------------
+[C-11] Offline-created invoices are non-compliant
+--------------------------------------------------------------------------------
+File : api/syncRouter.ts L57-131
+Fault: Offline sale -> `invoiceType: "simplified"` with no QR / XML / UUID.
+       No ZATCA queue write despite `zatcaOfflineQueue` existing.
+Impact: Every offline sale breaks the chain and cannot be reported in 24h.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-12] ZATCA HTTP responses are collapsed incorrectly (200/202/400)
+--------------------------------------------------------------------------------
+File : api/lib/zatca/clearance.ts L192-250
+Fault:
+  * `if (res.ok)` treats 200 AND 202 identically -> a 202 "accepted with
+    warnings" invoice is stored as `cleared` / `reported`.
+  * Warnings are stringified into a JSON column but not surfaced.
+  * On 400, DB status = "failed" but the returned object = "rejected"
+    (inconsistent enum).
+  * `Clearance-Status` response header is never read.
+  * Error codes from `responseData.validationResults` are not extracted.
+Impact: Reconciliation is impossible; warnings are silently lost.
+Severity: BLOCKER.
+
+--------------------------------------------------------------------------------
+[C-13] No database-level immutability; UI guards are bypassable
+--------------------------------------------------------------------------------
+File : api/salesRouter.ts L90-99, L845-856, L1068-1073
+       db/schema.ts L858 (status enum), L2253+ (zatca_invoice_status)
+Fault:
+  * Update guard blocks only `reported` / `cleared` / `cancelled` /
+    `credit_note`. An invoice with `zatcaStatus = "pending"` (QR + XML
+    already written) can still be edited; the QR/XML are then regenerated,
+    silently invalidating any prior hash.
+  * Delete guard `isIssuedOrZatcaLocked` is application-level only.
+  * `regulatorLocked` check at L883 includes "signed"/"submitted", but the
+    `invoices.zatcaStatus` enum only has pending/reported/cleared -> dead code.
+  * No DB trigger, no `is_locked` column in the live schema (the old snapshot
+    db/migrations/schema.ts had `isLocked`, the live db/schema.ts does not).
+Impact: A cleared invoice can be altered through any path that skips the
+        router (exports, sync, admin SQL), violating tamper-proofing.
+Severity: CRITICAL SECURITY.
+
+--------------------------------------------------------------------------------
+[C-14] Timezone is not Asia/Riyadh
+--------------------------------------------------------------------------------
+File : api/zatcaRouter.ts L195 (`new Date().toISOString().slice(11,19)`)
+       api/salesRouter.ts L533 (`new Date(date + "T00:00:00.000Z")`)
+Fault: IssueTime is UTC; the QR timestamp is midnight UTC, not the actual
+       Riyadh issue time. No `Asia/Riyadh` conversion anywhere in the
+       invoice pipeline (only in api/localizationRouter.ts L45 as metadata).
+Impact: Timestamp mismatch between QR and XML -> BR-KSA-27 style failure and
+        legal timestamp disputes.
+Severity: HIGH.
+
+--------------------------------------------------------------------------------
+[C-15] QR image rendering breaks in one template
+--------------------------------------------------------------------------------
+File : src/components/InvoicePrintTemplate.tsx L148, L589
+Fault: `invoice.zatcaQrCode` (a base64 TLV string) is bound directly to
+       `<img src=...>`. Compare with the correct re-encode in
+       src/pages/sales/SaudiInvoicePrint.tsx L236-245
+       (`QRCode.toDataURL`).
+Impact: Blank / broken QR on A4 and thermal layouts.
+Severity: HIGH.
+
+================================================================================
+2.2 WARNINGS & EDGE-CASE BUGS
+================================================================================
+
+[W-01] Rounding is float-based, no decimal library, no reconciliation
+  Files: api/lib/zatca/xmlBuilder.ts L92 (`amount.toFixed(2)`),
+         api/lib/zatca/completeImplementation.ts L190-238,
+         api/posRouter.ts L155 (`toFixed(4)`),
+         api/salesRouter.ts L974 (`toFixed(2)`)
+  Risk : 0.01 SAR drift between sum(lines) and header; no BR-CO-15 /
+         BR-S-08 pre-check; `toFixed` on JS floats is not banker's rounding.
+         Line tax is derived per-line then summed, but header tax comes from
+         the client input (`invoiceData.taxAmount`) — the two can disagree.
+
+[W-02] Tax categories Z / E / O exist only in the unused builder
+  File: api/lib/zatca/xmlBuilder.ts L29, L121, L273, L314, L438
+  Risk: The live flow always taxes at 15% (default `taxPercent = 15` in
+        db/schema.ts L823, api/salesRouter.ts L862). Zero-rated / exempt /
+        out-of-scope lines cannot be issued correctly.
+
+[W-03] VAT validation is structural only
+  Files: api/salesRouter.ts L85-88, completeImplementation.ts L290-293
+  `^3\d{13}3$` — correct shape, but no check against the seller's registered
+  number, no buyer VAT enforcement for B2B, no CR number validation.
+
+[W-04] Saudi National Address is missing
+  db/schema.ts `invoices` has only free-text customerAddress / customerAddressAr
+  (L846-848). No building number, district, additional number, or postal code
+  fields required by ZATCA Party address blocks.
+
+[W-05] ICV race condition across branches/terminals
+  api/zatcaRouter.ts `nextInvoiceCounter` (used at L191) is not transactional;
+  no `SELECT ... FOR UPDATE`; no unique constraint on
+  `(tenantId, invoiceUuid)` in zatca_invoice_status.
+  Two simultaneous invoices -> same ICV -> chain corruption.
+
+[W-06] Invoice-number uniqueness is per tenant only
+  db/schema.ts L869 `inv_num_idx` on (tenantId, invoiceNumber).
+  No uniqueness for UUID; no per-EGS-device sequence table.
+
+[W-07] Dead / duplicate modules mislead maintainers
+  * db/migrations/schema.ts contains a second `invoices` definition WITH
+    uuid, invoiceHash, isLocked, localUuid — not imported anywhere but
+    contradicts db/schema.ts (which drizzle.config.ts actually uses).
+  * api/lib/zatca/index.ts re-exports all modules, including dead pdfGenerator.
+  * api/lib/zatca/{archiving,validator,pdfGenerator,completeImplementation}
+    are effectively unwired (validator: 0 callers; archiving: 0 callers).
+
+[W-08] No automated ZATCA tests
+  api/__tests__ contains only errors.test.ts. `api/lib/zatca/testingScript.ts`
+  is manual and not part of `npm test`.
+
+[W-09] Onboarding compliance test list is a local constant
+  api/lib/zatca/onboarding.ts COMPLIANCE_TEST_INVOICES — never executed
+  against the ZATCA sandbox.
+
+[W-10] Queue retry constants declared but unused in the live path
+  api/lib/zatca/clearance.ts L45-48 (MAX_RETRIES, backoff) — the worker
+  (api/queue/tax.queue.ts) crashes before reaching retry logic.
+
+[W-11] Encryption key handling
+  api/lib/zatca/certificates.ts L30-55 derives the AES key from an env value.
+  No key rotation, no KMS/HSM; private keys sit in MySQL text columns.
+  Acceptable for MVP, not for solution-provider certification.
+
+[W-12] Thermal Arabic
+  api/lib/thermal/escpos.ts L128, L171 use English labels only; no CP1256 /
+  CP864 code page switch, so Arabic seller name will print as garbage.
+
+[W-13] PDF "ZATCA Compliant" label is misleading
+  api/services/pdfService.ts L208 prints "ZATCA Compliant" regardless of the
+  actual QR content (which is Phase 1 only).
+
+[W-14] POS ignores partial payments / multiple methods
+  api/posRouter.ts L146-245 always `status: "paid"` and writes a single
+  cashbox row; `balanceDue` computed with toFixed(4) but never stored as a
+  distinct status.
+
+[W-15] No retention/archival job
+  api/lib/zatca/archiving.ts (6-year retention helpers) has zero callers.
+
+================================================================================
+2.3 PASSED CHECKS (verified working)
+================================================================================
+
+P-01 ECDSA key generation uses curve secp256k1
+     api/lib/zatca/signingEngine.ts L38-56 — correct curve for ZATCA.
+
+P-02 Real ZATCA endpoints + protocol headers
+     api/lib/zatca/clearance.ts L45-60, L175-186
+     gw-fatoora sandbox/production, Basic auth, Accept-Version: V2.
+
+P-03 Credential encryption at rest
+     api/lib/zatca/certificates.ts L34-55 (AES-256-GCM).
+
+P-04 Onboarding state machine + certificate tables
+     api/lib/zatca/onboarding.ts L11-50; db/schema.ts L2204-2251
+     (complianceCsidEncrypted / productionCsidEncrypted / tokens).
+
+P-05 9-tag TLV encoder exists and is correct in structure
+     api/lib/zatca/xmlBuilder.ts L588-628 (length-prefixed bytes, base64).
+
+P-06 Decent UBL 2.1 builders exist (including credit/debit notes)
+     api/lib/zatca/xmlBuilder.ts L95-517 — needs wiring + bugfixes, not rewrite.
+
+P-07 Immutability intent is present for cleared/reported
+     api/salesRouter.ts L90-99, L845-856, L1068-1073.
+     (Needs to become DB-enforced.)
+
+P-08 Bilingual A4 invoice + PDF QR
+     src/pages/sales/SaudiInvoicePrint.tsx; src/components/InvoicePrintTemplate.tsx;
+     api/services/pdfService.ts L202-213.
+
+P-09 RTL framework
+     src/providers/language.tsx L20-38 (dir/lang/localStorage/auto-detect).
+
+P-10 Thermal ESC/POS QR commands
+     api/lib/thermal/escpos.ts L93-160; pocket58.ts L32-38.
+
+P-11 15% VAT default + Saudi tenant seeding
+     db/schema.ts L823 (tax_percent default 15);
+     api/salesRouter.ts L478-487 (SA -> vatRate 15).
+
+P-12 GOSI / WPS / EOSB / Iqama / Qiwa modules
+     api/lib/{gosi,wps,eosb,qiwa,muqeem}.ts + routers + DB tables —
+     the strongest part of the codebase; ready for Saudi HR use.
+
+P-13 Ordered offline mutation queue
+     src/lib/offline/mutationQueue.ts L1-40+ (FIFO, failure stops flush).
+
+P-14 Unique invoice number per tenant
+     db/schema.ts L869 `inv_num_idx`.
+
+P-15 JSON error logging for every ZATCA call
+     api/lib/zatca/clearance.ts L188-198 (logApiCall with payloads).
+
+================================================================================
+2.4 ACTIONABLE FIX PLAN
+================================================================================
+
+P0 — MUST FIX BEFORE ANY SANDBOX TEST (in order)
+  1.  Add invoice Phase-2 columns + migration
+      db/schema.ts (invoices L826-870):
+        uuid varchar(36) NOT NULL, invoiceHash varchar(255),
+        previousInvoiceHash varchar(255), icv bigint,
+        signedXml longtext, qrPhase2 text, submissionStatus enum,
+        clearedAt/reportedAt datetime, egsDeviceId varchar(64)
+      + unique (tenantId, uuid), unique (tenantId, egsDeviceId, icv)
+      + new migration; delete/ignore the conflicting db/migrations/schema.ts.
+
+  2.  Build ONE invoice pipeline (single source of truth)
+      Replace `buildSaudiInvoiceXml` (api/salesRouter.ts L42-71) and the
+      inline XML in api/zatcaRouter.ts L205-265 with
+      api/lib/zatca/xmlBuilder.ts. Wire sales, POS, sync, construction,
+      decoration to it. Delete api/zatcaCompleteRouter.ts duplication.
+
+  3.  Fix UBL correctness (xmlBuilder.ts)
+      - subtype name from invoice type: standard=0100000, simplified=0200000,
+        standard credit/debit=0100000, simplified credit/debit=0200000.
+      - document code: 388 / 381 / 383.
+      - BillingReference ID = original invoice UUID/ID (fix L191).
+      - enforce InstructionNote + reason code for 381/383.
+      - add AccountingCustomerParty, InvoiceLine, TaxSubtotal, IssueTime.
+
+  4.  Implement real PIH/ICV
+      api/lib/zatca/hashChain.ts:
+        first PIH = base64(sha256("0")); PIH(n) = hash(n-1).
+      Allocate ICV inside a transaction with row lock per
+      (tenantId, egsDeviceId); persist hash + PIH on the invoice.
+
+  5.  Implement XAdES-B-B ECDSA signing
+      api/lib/zatca/signingEngine.ts:
+        C14N 1.1 -> digest InvoiceHash -> build SignedProperties ->
+        digest -> sign with secp256k1 -> embed ds:Signature before final
+        hash; certificateHash from the CERTIFICATE (not private key).
+      Remove the pseudo signature in api/zatcaRouter.ts.
+
+  6.  ZATCA-compliant CSR + real onboarding
+      api/lib/zatca/certificates.ts L128-196:
+        subject CN, OU, O, C=SA, title=1100, SN/UID=15-digit VAT.
+        Add ZATCA OIDs (1.3.6.1.4.1.311.20.2.3 + EGS/VAT/type/branch).
+      onboarding.ts: call POST /compliance, run the 6 real tests, then
+      POST /production/csids. Remove local-only recordComplianceTestResult.
+
+  7.  Emit 9-tag QR everywhere
+      Replace every `buildZatcaQrPayload` / `buildZatcaTlvQr` call with
+      `buildBase64QrPayload` (xmlBuilder L588) using real hash/signature/
+      public key/stamp. Files: salesRouter L536, L899; taxComplianceRouter L682;
+      zatcaCompleteRouter L302; decorationRouter L1508; POS; sync.
+
+  8.  Fix clearance/reporting worker
+      api/queue/tax.queue.ts L30, L36 -> object call + productionCsidEncrypted.
+      clearance.ts: distinguish 200 vs 202 vs 400; read Clearance-Status;
+      map validationResults -> error codes; store warnings separately.
+
+  9.  POS + offline
+      api/posRouter.ts L146-245: honour input invoiceType, generate UUID +
+      XML + 9-tag QR + hash at sale time.
+      api/syncRouter.ts L57: same for offline sales; write zatcaOfflineQueue;
+      add 24h reporting job.
+
+ 10.  Credit/Debit notes as invoices
+      api/salesRouter.ts L1109-1180: create a real invoice row
+      (type 381/383) with BillingReference + InstructionNote + QR + XML,
+      or extend the existing invoice with a note type. Stop writing only to
+      `creditNotes`.
+
+P1 — BEFORE GOING LIVE
+ 11. Pre-submission validator: run api/lib/zatca/validator.ts + XSD before
+     every submit; block on error.
+ 12. DB-level immutability: trigger / `is_locked` + refuse UPDATE/DELETE when
+     submitted/cleared/reported; also refuse edits when any XML/QR exists.
+ 13. Riyadh timezone: all IssueTime/QR timestamps via
+     `Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Riyadh"})` or date-fns-tz.
+ 14. Decimal-safe money: integer minor units or decimal.js across
+     line/header/VAT; enforce header = sum(lines) (BR-CO-15) + tax = 15%.
+ 15. Tax categories S/E/Z/O in the live flow + exemption reason codes.
+ 16. Buyer VAT mandatory for standard B2B; structured Saudi National Address.
+ 17. Fix QR rendering in InvoicePrintTemplate L148/L589.
+ 18. Automated tests: 6 document types + 5 negative cases against sandbox.
+
+P2 — MARKET COMPLETENESS
+ 19. Arabic thermal code page (CP1256/CP864) and Arabic line items.
+ 20. Moyasar or HyperPay (Mada + Apple Pay) + webhook/refund; then STC Pay,
+     Tabby, Tamara.
+ 21. WPS bank/Mudad submission + acknowledgement.
+ 22. Retention archive job (api/lib/zatca/archiving.ts) 6 years.
+ 23. Expand i18n from 3 namespaces to all screens.
+ 24. KMS/HSM for private keys; key rotation.
+
+
+================================================================================
+PART 3 — READY vs REMAINING (QUICK VIEW)
+================================================================================
+
+READY NOW (usable without ZATCA certification)
+  [x] Invoice data model (amounts, VAT 15%, customer VAT field)
+  [x] Bilingual A4 invoice + PDF + thermal printing
+  [x] Arabic RTL framework
+  [x] GOSI / WPS files / EOSB / Iqama / Qiwa
+  [x] Encrypted cert/token storage
+  [x] Offline write queue (generic, ordered)
+  [x] Real ZATCA endpoint config + V2 header
+  [x] Audit log of ZATCA API calls
+  [x] Unique invoice numbering per tenant
+
+REMAINING (all Phase-2 legal requirements)
+  [ ] uuid / invoiceHash / previousInvoiceHash / icv columns (P0-1)
+  [ ] one valid UBL 2.1 pipeline (P0-2/3)
+  [ ] PIH seed + ICV transaction (P0-4)
+  [ ] XAdES ECDSA signature (P0-5)
+  [ ] ZATCA CSR + real CCSID/PCSID onboarding (P0-6)
+  [ ] 9-tag QR in production paths (P0-7)
+  [ ] working clearance/reporting worker (P0-8)
+  [ ] POS + offline ZATCA data (P0-9)
+  [ ] compliant credit/debit notes (P0-10)
+  [ ] validator + immutability + Riyadh TZ + decimal rounding (P1)
+  [ ] payment gateways (P2)
+  [ ] WPS submission, archiving, full i18n (P2)
+
+
+================================================================================
+PART 4 — READY-TO-USE FIX PROMPT (copy/paste to the coding agent)
+================================================================================
+
+PROMPT START
+-------------------------------------------------------------------------------
+You are fixing ZATCA Phase 2 compliance in the YASCO ERP repository
+(/home/ubuntu/yasco-erp-android). Work incrementally, commit per step, and do
+NOT touch the hosted VPS, do NOT change DNS, and do NOT alter unrelated
+modules. Keep the existing UI/UX and Arabic RTL intact. After each step run
+`npm run check` and the ZATCA sandbox test you add.
+
+GOAL: make every issued invoice legally valid for ZATCA Phase 2 (B2B clearance
++ B2C reporting), with a verifiable PIH/ICV chain and 9-tag QR, using ONE
+invoice pipeline.
+
+STEP 1 — Schema (db/schema.ts + new migration in db/migrations/)
+  Add to `invoices`: uuid varchar(36) NOT NULL, invoiceHash varchar(255),
+  previousInvoiceHash varchar(255), icv bigint unsigned, egsDeviceId
+  varchar(64), signedXml longtext, qrPhase2 text, submissionStatus
+  enum('draft','signed','submitted','cleared','reported','rejected'),
+  clearedAt datetime, reportedAt datetime.
+  Add unique indexes: (tenantId, uuid) and (tenantId, egsDeviceId, icv).
+  Create the missing `zatca_offline_queue` in a migration (it only exists in
+  db/schema.ts today). Do not delete data; use additive migrations.
+
+STEP 2 — Single XML pipeline
+  Create api/lib/zatca/invoicePipeline.ts exporting
+  buildAndPersistInvoice({tenantId, invoiceId, mode, environment}) that:
+    1. loads invoice + items + seller settings
+    2. allocates ICV inside a transaction (SELECT ... FOR UPDATE per tenant +
+       egsDeviceId) and returns previousInvoiceHash
+    3. builds UBL 2.1 with api/lib/zatca/xmlBuilder.ts
+    4. computes invoiceHash over canonicalized XML
+    5. signs with XAdES-B-B ECDSA (secp256k1)
+    6. builds the 9-tag TLV QR
+    7. persists uuid/hash/PIH/icv/signedXml/qrPhase2 atomically
+  Route ALL of these through it: api/salesRouter.ts, api/posRouter.ts,
+  api/syncRouter.ts, api/decorationRouter.ts, api/zatcaConstructionRouter.ts.
+  Delete the duplicate XML in api/salesRouter.ts L42-71 and
+  api/zatcaRouter.ts L205-265.
+
+STEP 3 — UBL correctness (api/lib/zatca/xmlBuilder.ts)
+  * Standard invoice: InvoiceTypeCode name="0100000">388.
+  * Simplified invoice: name="0200000">388.
+  * Credit note: name="0100000" or "0200000">381 + BillingReference (original
+    invoice UUID/ID) + InstructionNote + reason code 01-05.
+  * Debit note: same but 383.
+  * Fix L191: BillingReference must NOT use customer.vatNumber.
+  * Always emit cac:AccountingCustomerParty, cac:InvoiceLine, cac:TaxTotal/
+    cac:TaxSubtotal, cbc:IssueDate + cbc:IssueTime (Asia/Riyadh).
+  * Support tax categories S/E/Z/O with exemption reason codes.
+
+STEP 4 — PIH/ICV (api/lib/zatca/hashChain.ts)
+  EMPTY_HASH = base64(sha256("0")). prevHash(n) = invoiceHash(n-1), with no
+  re-hashing. Remove computePih(prev+current). Add tests:
+  first invoice PIH must equal EMPTY_HASH.
+
+STEP 5 — Signing (api/lib/zatca/signingEngine.ts)
+  Implement C14N 1.1, InvoiceHash digest, XAdES SignedProperties digest,
+  ECDSA secp256k1 signature, ds:Signature placed inside ext:UBLExtensions
+  BEFORE final hashing. Derive certificateHash from the X.509 certificate.
+  Remove every placeholder <Signature>/<DigitalSignature> from
+  api/zatcaRouter.ts.
+
+STEP 6 — CSR + onboarding (certificates.ts, onboarding.ts)
+  CSR subject: CN, OU, O, C=SA, title=1100, SN/UID = 15-digit VAT starting
+  and ending with 3, registered address, business category, plus ZATCA OIDs
+  (1.3.6.1.4.1.311.20.2.3 and EGS serial/VAT/invoice type/branch extensions).
+  Replace recordComplianceTestResult with real calls:
+  POST /compliance (CCSID), run the 6 compliance invoices, then
+  POST /production/csids (PCSID). Store secrets encrypted.
+
+STEP 7 — QR
+  Replace all 5-tag builders (api/salesRouter.ts L24/L536/L899,
+  api/taxComplianceRouter.ts L77/L682, api/zatcaCompleteRouter.ts L302) with
+  the 9-tag builder. Tag 6 = invoice hash, 7 = signature, 8 = public key,
+  9 = ZATCA stamp (empty until cleared for B2B, stamped value after).
+
+STEP 8 — Clearance/Reporting
+  api/queue/tax.queue.ts: call submitInvoice({tenantId, invoiceId, mode,
+  environment}) and check productionCsidEncrypted.
+  api/lib/zatca/clearance.ts: handle 200 (cleared/reported), 202 (accepted
+  with warnings — persist warnings, status 'reported' with warning flag),
+  400 (rejected — persist validationResults codes), 401 (auth), 5xx (retry).
+  Read the Clearance-Status header. Add idempotency key + dead-letter.
+
+STEP 9 — POS + offline
+  api/posRouter.ts: honour invoiceType, generate UUID/XML/9-tag QR at sale,
+  never insert without them when ZATCA is enabled.
+  api/syncRouter.ts: for offline sales, assign ICV + sign on device, write
+  zatcaOfflineQueue, replay in order, report within 24h.
+
+STEP 10 — Credit/Debit notes
+  api/salesRouter.ts creditNoteCreate: create a real 381/383 invoice row with
+  BillingReference + InstructionNote + QR + XML, or convert the existing
+  creditNotes flow to use the invoice pipeline. No draft-only notes.
+
+STEP 11 — Safety rails
+  * Riyadh timezone helper used for IssueTime and QR timestamp.
+  * Decimal-safe money math + BR-CO-15 / BR-S-08 assertions before signing.
+  * DB trigger or service guard: block UPDATE/DELETE when submissionStatus in
+    (submitted, cleared, reported) OR signedXml is not null.
+  * Run validator.ts + XSD before every submit; abort on error.
+
+STEP 12 — Tests
+  Add api/__tests__/zatca-phase2.test.ts covering the 6 document types,
+  rounding edge cases (0.005, 0.01 drift), PIH/ICV continuity, 9-tag QR
+  decode, 200/202/400 handling, and immutability rejection.
+
+DONE CRITERIA
+  - Every invoice has uuid, icv, invoiceHash, previousInvoiceHash, signedXml.
+  - QR decodes to 9 tags with a verifiable signature.
+  - Sandbox: B2B invoice -> 200 cleared; B2C -> 200/202 reported;
+    credit/debit notes accepted.
+  - Editing a cleared invoice is impossible via API and DB.
+  - `npm test` green, `npm run check` clean.
+-------------------------------------------------------------------------------
+PROMPT END
+
+
+================================================================================
+PART 5 — SANDBOX VERIFICATION CHECKLIST (run after fixes)
+================================================================================
+
+[ ] 1. CSR accepted by ZATCA -> CCSID returned.
+[ ] 2. All 6 compliance invoices return 200 (or 202 for simplified).
+[ ] 3. PCSID issued and stored encrypted.
+[ ] 4. First invoice PIH == base64(sha256("0")).
+[ ] 5. Invoice #2 PIH == hash of invoice #1.
+[ ] 6. ICV sequence 1,2,3... with no gaps after 100 concurrent inserts.
+[ ] 7. QR decodes to exactly 9 TLV tags; tag 6 == invoice hash; signature
+       verifies with tag 8 public key.
+[ ] 8. Standard B2B: 200 cleared, Clearance-Status read, cleared XML stored.
+[ ] 9. Simplified B2C: reported within 24h; 202 warnings visible.
+[ ] 10. Credit note 381 references the original UUID and carries a reason.
+[ ] 11. Debit note 383 same.
+[ ] 12. Zero-rated / exempt / out-of-scope lines produce correct tax subtotals.
+[ ] 13. Header VAT == sum(line VAT) for 100 random carts.
+[ ] 14. Attempt to edit a cleared invoice -> rejected by API and DB.
+[ ] 15. Attempt to delete a signed invoice -> rejected.
+[ ] 16. IssueTime matches Asia/Riyadh in QR and XML.
+[ ] 17. Invoice print/PDF shows Arabic + English + buyer VAT + QR.
+[ ] 18. Offline sale -> queued -> signed -> reported, chain intact.
+[ ] 19. 400 response stores ZATCA error codes and does not mark cleared.
+[ ] 20. 6-year archive export works (archiving.ts wired).
+
+
+================================================================================
+APPENDIX A — EVIDENCE INDEX
+================================================================================
+
+DB / SCHEMA
+  db/schema.ts L826-870            invoices (no uuid/hash/icv)
+  db/schema.ts L858                status enum
+  db/schema.ts L869                unique (tenantId, invoiceNumber)
+  db/schema.ts L2204-2224          zatca_credentials (productionCsidEncrypted)
+  db/schema.ts L2253-2275          zatca_invoice_status
+  db/schema.ts L3921-4014          GOSI + WPS tables
+  db/schema.ts L4053+              iqama_records
+  db/schema.ts L5241-5268          zatca_offline_queue (unreferenced)
+  db/migrations/0003_zatca_phase2_module.sql  (9 tables, NOT offline queue)
+  db/migrations/schema.ts          dead duplicate with uuid/isLocked
+  drizzle.config.ts                schema = ./db/schema.ts
+
+INVOICE FLOW
+  api/salesRouter.ts L24-47        5-tag QR encoder
+  api/salesRouter.ts L42-71        minimal XML (hardcoded 0100000)
+  api/salesRouter.ts L85-88        VAT regex
+  api/salesRouter.ts L90-99        immutability helper
+  api/salesRouter.ts L478-560      type resolution + threshold 700000
+  api/salesRouter.ts L533-541      UTC timestamp + QR
+  api/salesRouter.ts L640-670      insert (QR/XML/status)
+  api/salesRouter.ts L845-856      update guard
+  api/salesRouter.ts L1068-1073    delete guard
+  api/salesRouter.ts L1109-1180    creditNoteCreate (draft only)
+  api/posRouter.ts L128-145        input (invoiceType ignored)
+  api/posRouter.ts L146-245        createSale (no ZATCA data)
+  api/syncRouter.ts L57-131        offline invoice (no ZATCA data)
+
+ZATCA LIBRARY
+  api/lib/zatca/xmlBuilder.ts L95-291, L292-415, L416-517, L518-586, L588-628
+  api/lib/zatca/hashChain.ts L6, L22-26
+  api/lib/zatca/signingEngine.ts L1-90
+  api/lib/zatca/certificates.ts L34-55, L128-196
+  api/lib/zatca/onboarding.ts L11-50, L88-135, L236-265
+  api/lib/zatca/clearance.ts L45-60, L108-114, L175-250, L289+
+  api/lib/zatca/validator.ts (unwired), archiving.ts (unwired)
+  api/queue/tax.queue.ts L30, L36   runtime-broken
+
+ROUTERS / REGISTRATION
+  api/router.ts L116, L126-129
+  api/zatcaRouter.ts L190-265, L718, L790-805, L820-900
+  api/zatcaCompleteRouter.ts L302
+  api/decorationRouter.ts L1508
+
+PRINT / UI
+  src/components/InvoicePrintTemplate.tsx L148, L589 (QR bug)
+  src/pages/sales/SaudiInvoicePrint.tsx L236-245 (correct QR)
+  api/services/pdfService.ts L202-213
+  api/thermalPrintRouter.ts L44-58
+  api/lib/thermal/escpos.ts L93-190
+  api/lib/thermal/pocket58.ts L1-40
+  src/providers/language.tsx L20-38
+  src/i18n/locales/{ar,en}.json (3 namespaces)
+
+HR / PAYMENTS
+  api/lib/gosi.ts, api/gosiRouter.ts
+  api/lib/wps.ts, api/wpsRouter.ts
+  api/lib/eosb.ts, api/eosbRouter.ts
+  api/lib/qiwa.ts, api/qiwaRouter.ts, api/lib/muqeem.ts
+  api/licenseAdminRouter.ts L394-400
+  api/lib/plugins/pluginRegistry.ts L62-66
+
+================================================================================
+END OF REPORT — no files, database rows, or configurations were modified
+except the creation of this report file itself.
+================================================================================

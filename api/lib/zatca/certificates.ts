@@ -132,6 +132,10 @@ export function generateCsrInformation(params: {
   emailAddress?: string;
   serialNumber?: string;
   uid?: string;
+  organizationalUnit?: string;
+  title?: string;
+  registeredAddress?: string;
+  businessCategory?: string;
 }): { privateKeyPem: string; publicKeyPem: string; csrPem: string } {
   const keyPair = generateKeyPair("ECDSA-SHA256");
 
@@ -141,25 +145,33 @@ export function generateCsrInformation(params: {
   const csr = pki.createCertificationRequest();
   csr.publicKey = privKey.publicKey;
 
-  const attrs: Array<{ name: string; value: string }> = [
+  // ZATCA CSR subject (Security Features standard):
+  //   CN, OU, O, C=SA, E, SN = EGS serial, UID = 15-digit VAT, title = 1100,
+  //   registeredAddress, businessCategory.
+  const attrs: Array<{ name?: string; type?: string; value: string }> = [
     { name: "commonName", value: params.commonName },
+    { name: "organizationalUnitName", value: params.organizationalUnit || "ZATCA EGS" },
     { name: "organizationName", value: params.organizationName },
-    { name: "countryName", value: params.countryCode },
+    { name: "countryName", value: params.countryCode || "SA" },
   ];
 
-  if (params.emailAddress) {
-    attrs.push({ name: "emailAddress", value: params.emailAddress });
+  if (params.emailAddress) attrs.push({ name: "emailAddress", value: params.emailAddress });
+  if (params.serialNumber) attrs.push({ name: "serialNumber", value: params.serialNumber });
+  if (params.uid) attrs.push({ name: "uid", value: params.uid });
+  // title = 1100 is mandatory for B2B + B2C devices.
+  attrs.push({ name: "title", value: params.title || "1100" });
+  if (params.registeredAddress) {
+    // 2.5.4.26 = street address (registeredAddress in ZATCA CSR)
+    attrs.push({ name: "streetAddress", value: params.registeredAddress });
   }
-
-  if (params.serialNumber) {
-    attrs.push({ name: "serialNumber", value: params.serialNumber });
+  if (params.businessCategory) {
+    // 2.5.4.15 = businessCategory
+    attrs.push({ name: "businessCategory", value: params.businessCategory });
   }
+  // ZATCA certificate template identifier (Microsoft OID used by ZATCA).
+  attrs.push({ type: "1.3.6.1.4.1.311.20.2.3", value: "ZATCA" });
 
-  if (params.uid) {
-    attrs.push({ name: "uid", value: params.uid });
-  }
-
-  csr.setSubject(attrs);
+  csr.setSubject(attrs as any);
 
   const extensions = [
     {

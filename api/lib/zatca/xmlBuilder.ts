@@ -108,14 +108,18 @@ export function buildZatcaXml(params: {
   publicKey?: string;
   certificateHash?: string;
   invoiceCounter?: number;
+  billingReferenceId?: string;
+  instructionNote?: string;
 }): { xml: string; invoiceHash: string } {
   const uuid = params.uuid || randomUUID();
   const currency = params.currency || "SAR";
-  const profileId = params.invoiceType === "standard" ? "reporting:1.0" : "reporting:1.0";
   const clearanceProfile = params.invoiceType === "standard" ? "clearance:1.0" : "reporting:1.0";
-  const invoiceTypeCode = params.invoiceType === "standard" ? "0100000" : "0200000";
+  const isB2B = Boolean(params.customer.vatNumber);
+  const invoiceTypeCode = params.invoiceType === "standard" || isB2B ? "0100000" : "0200000";
   const documentTypeCode = params.invoiceType === "credit_note" ? "381" : params.invoiceType === "debit_note" ? "383" : "388";
-  const invoiceTypeName = params.invoiceType === "credit_note" ? "0200000" : params.invoiceType === "debit_note" ? "0300000" : invoiceTypeCode;
+  const invoiceTypeName = params.invoiceType === "credit_note" || params.invoiceType === "debit_note"
+    ? (isB2B ? "0100000" : "0200000")
+    : invoiceTypeCode;
 
   const linesXml = params.lines.map((line, index) => {
     const taxCategory = line.taxCategory || "S";
@@ -180,16 +184,16 @@ export function buildZatcaXml(params: {
     : "";
 
   const icvBlock = params.invoiceCounter
-    ? `<cac:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${uuid}</cbc:UUID></cac:AdditionalDocumentReference>`
+    ? `<cac:AdditionalDocumentReference><cbc:ID>ICV</cbc:ID><cbc:UUID>${params.invoiceCounter}</cbc:UUID></cac:AdditionalDocumentReference>`
     : "";
 
   const pihBlock = params.previousInvoiceHash
-    ? `<cac:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cbc:UUID>${params.previousInvoiceHash}</cbc:UUID></cac:AdditionalDocumentReference>`
+    ? `<cac:AdditionalDocumentReference><cbc:ID>PIH</cbc:ID><cac:Attachment><cbc:EmbeddedDocumentBinaryObject mimeCode="text/plain">${xmlEscape(params.previousInvoiceHash)}</cbc:EmbeddedDocumentBinaryObject></cac:Attachment></cac:AdditionalDocumentReference>`
     : "";
 
   const creditNoteBlock = (params.invoiceType === "credit_note" || params.invoiceType === "debit_note")
-    ? `  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:ID>${xmlEscape(params.customer.vatNumber || "")}</cbc:ID></cac:InvoiceDocumentReference></cac:BillingReference>
-  <cac:DiscrepancyResponse><cbc:ReferenceID>${xmlEscape(params.customer.vatNumber || "")}</cbc:ReferenceID><cbc:Description>Correction</cbc:Description></cac:DiscrepancyResponse>`
+    ? `  <cac:BillingReference><cac:InvoiceDocumentReference><cbc:ID>${xmlEscape(params.billingReferenceId || "")}</cbc:ID></cac:InvoiceDocumentReference></cac:BillingReference>
+  <cac:DiscrepancyResponse><cbc:ReferenceID>${xmlEscape(params.billingReferenceId || "")}</cbc:ReferenceID><cbc:Description>${xmlEscape(params.instructionNote || "Correction")}</cbc:Description></cac:DiscrepancyResponse>`
     : "";
 
   const unsignedXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -206,6 +210,9 @@ export function buildZatcaXml(params: {
   <cbc:IssueDate>${params.issueDate}</cbc:IssueDate>
   <cbc:IssueTime>${params.issueTime}</cbc:IssueTime>
   <cbc:InvoiceTypeCode name="${invoiceTypeName}">${documentTypeCode}</cbc:InvoiceTypeCode>
+  ${(params.invoiceType === "credit_note" || params.invoiceType === "debit_note")
+    ? `<cbc:InstructionNote>${xmlEscape(params.instructionNote || "Correction")}</cbc:InstructionNote>`
+    : ""}
   <cbc:DocumentCurrencyCode>${currency}</cbc:DocumentCurrencyCode>
   <cbc:TaxCurrencyCode>${currency}</cbc:TaxCurrencyCode>
   <cbc:BuyerReference>${xmlEscape(params.customer.legalName)}</cbc:BuyerReference>
@@ -348,7 +355,7 @@ export function buildCreditNoteXml(params: {
   <cbc:UUID>${uuid}</cbc:UUID>
   <cbc:IssueDate>${params.issueDate}</cbc:IssueDate>
   <cbc:IssueTime>${params.issueTime}</cbc:IssueTime>
-  <cbc:CreditNoteTypeCode name="0200000">381</cbc:CreditNoteTypeCode>
+  <cbc:CreditNoteTypeCode name="${params.customer.vatNumber ? "0100000" : "0200000"}">381</cbc:CreditNoteTypeCode>
   <cbc:DocumentCurrencyCode>${currency}</cbc:DocumentCurrencyCode>
   <cbc:TaxCurrencyCode>${currency}</cbc:TaxCurrencyCode>
   <cbc:InstructionNote>${reasonCode} - ${xmlEscape(reason)}</cbc:InstructionNote>
@@ -468,7 +475,7 @@ export function buildDebitNoteXml(params: {
   <cbc:UUID>${uuid}</cbc:UUID>
   <cbc:IssueDate>${params.issueDate}</cbc:IssueDate>
   <cbc:IssueTime>${params.issueTime}</cbc:IssueTime>
-  <cbc:DebitNoteTypeCode name="0300000">383</cbc:DebitNoteTypeCode>
+  <cbc:DebitNoteTypeCode name="${params.customer.vatNumber ? "0100000" : "0200000"}">383</cbc:DebitNoteTypeCode>
   <cbc:DocumentCurrencyCode>${currency}</cbc:DocumentCurrencyCode>
   <cbc:TaxCurrencyCode>${currency}</cbc:TaxCurrencyCode>
   <cbc:InstructionNote>${reasonCode} - ${xmlEscape(reason)}</cbc:InstructionNote>

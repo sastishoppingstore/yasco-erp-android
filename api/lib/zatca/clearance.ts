@@ -22,6 +22,8 @@ export interface SubmissionResult {
   errorMessage?: string;
   httpStatus?: number;
   rawResponse?: Record<string, unknown>;
+  clearanceStatus?: string;
+  retryable?: boolean;
 }
 
 export interface SyncQueueItem {
@@ -183,6 +185,17 @@ export async function submitInvoice(params: {
     });
 
     const responseData = await res.json().catch(() => ({ text: "Non-JSON response" })) as Record<string, unknown>;
+    // ZATCA returns the clearance outcome in this header (CLEARED / REJECTED).
+    const clearanceStatusHeader =
+      res.headers.get("Clearance-Status") ||
+      res.headers.get("clearance-status") ||
+      "";
+    const acceptedWithWarnings = res.status === 202;
+    const warningList = Array.isArray(responseData.warnings)
+      ? (responseData.warnings as string[])
+      : acceptedWithWarnings
+        ? ["Accepted with warnings"]
+        : undefined;
 
     await logApiCall({
       tenantId: params.tenantId,
@@ -199,14 +212,18 @@ export async function submitInvoice(params: {
     });
 
     if (res.ok) {
+      // 200 = accepted. 202 = accepted with warnings (still a success, but the
+      // warnings must be persisted so the operator can act on them).
       const zatcaStatus: SubmissionStatus = params.mode === "clearance" ? "cleared" : "reported";
+      const resolvedClearanceStatus = clearanceStatusHeader
+        || (params.mode === "clearance" ? (acceptedWithWarnings ? "CLEARED_WITH_WARNINGS" : "CLEARED") : (acceptedWithWarnings ? "REPORTED_WITH_WARNINGS" : "REPORTED"));
       const updateData: Record<string, unknown> = {
         status: zatcaStatus,
         zatcaRequestId: (responseData.requestId as string) || (responseData.requestID as string),
         zatcaResponseId: (responseData.responseId as string) || (responseData.responseID as string),
-        clearanceStatus: params.mode === "clearance" ? String(responseData.status || "cleared") : undefined,
-        reportingStatus: params.mode === "reporting" ? String(responseData.status || "reported") : undefined,
-        warnings: responseData.warnings ? JSON.stringify(responseData.warnings) : undefined,
+        clearanceStatus: params.mode === "clearance" ? resolvedClearanceStatus : undefined,
+        reportingStatus: params.mode === "reporting" ? resolvedClearanceStatus : undefined,
+        warnings: warningList ? JSON.stringify(warningList) : undefined,
         submittedAt: new Date(),
         updatedAt: new Date(),
       };
@@ -239,27 +256,51 @@ export async function submitInvoice(params: {
         zatcaRequestId: updateData.zatcaRequestId as string | undefined,
         zatcaResponseId: updateData.zatcaResponseId as string | undefined,
         clearedXml: clearedXml,
-        warnings: responseData.warnings as string[] | undefined,
+        warnings: warningList,
+        clearanceStatus: resolvedClearanceStatus,
         httpStatus: res.status,
         rawResponse: responseData,
       };
     }
 
+    // ---- Failure classification (400 / 401 / 403 / 429 / 5xx) ----
+    const validation = (responseData.validationResults || responseData.validation || {}) as any;
+    const errorMessages: any[] = Array.isArray(validation?.errorMessages) ? validation.errorMessages : [];
+    const warningMessages: any[] = Array.isArray(validation?.warningMessages) ? validation.warningMessages : [];
+    const firstError = errorMessages[0] || {};
+    const errorCode = String(firstError.code || responseData.code || responseData.errorCode || "");
+    const errorText = firstError.message
+      || (typeof responseData.message === "string" ? responseData.message : "")
+      || JSON.stringify(responseData);
+
+    const isRejected = res.status === 400 || res.status === 422;
+    const retryable = res.status === 429 || res.status >= 500;
+
     if (statusRow) {
       await db.update(zatcaInvoiceStatus)
         .set({
-          status: "failed",
-          errorCode: String(responseData.code || responseData.errorCode || ""),
-          errorMessage: JSON.stringify(responseData),
+          status: isRejected ? "rejected" : "failed",
+          errorCode,
+          errorMessage: JSON.stringify({
+            httpStatus: res.status,
+            message: errorText,
+            errors: errorMessages,
+            warnings: warningMessages,
+          }),
+          warnings: warningMessages.length ? JSON.stringify(warningMessages) : undefined,
+          clearanceStatus: clearanceStatusHeader || undefined,
           updatedAt: new Date(),
         })
         .where(eq(zatcaInvoiceStatus.id, statusRow.id));
     }
 
     return {
-      status: "rejected",
-      errorMessage: JSON.stringify(responseData),
+      status: isRejected ? "rejected" : "failed",
+      errorMessage: errorCode ? `${errorCode}: ${errorText}` : errorText,
+      warnings: warningMessages.map((w: any) => w.message || String(w)),
+      clearanceStatus: clearanceStatusHeader || undefined,
       httpStatus: res.status,
+      retryable,
       rawResponse: responseData,
     };
   } catch (error) {

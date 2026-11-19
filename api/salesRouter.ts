@@ -5,11 +5,18 @@ import {
   customers, salesQuotations, salesQuotationItems,
   salesOrders, salesOrderItems, invoices, invoiceItems,
   creditNotes, customerPayments, companySettings, auditLogs, companies, products,
-  inventoryBalances, inventoryMovements, warehouses, cashboxTransactions, users
+  inventoryBalances, inventoryMovements, warehouses, cashboxTransactions, users,
+  zatcaInvoiceStatus
 } from "@db/schema";
 import { eq, sql, and, like, or, desc } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { onInvoiceCreated, onPaymentReceived } from "./lib/notifications/events";
+import {
+  finalizeZatcaInvoice,
+  sellerFromSettings,
+  buyerFromInvoice,
+  type ZatcaLineInput,
+} from "./lib/zatca/phase2";
 
 function encodeZatcaTlv(tag: number, value: string): Uint8Array {
   const encoder = new TextEncoder();
@@ -530,41 +537,21 @@ export const salesRouter = createRouter({
         });
       }
 
-      const timestamp = new Date(`${invoiceData.date}T00:00:00.000Z`).toISOString();
-
-      // QR code — ALL invoices get a QR code:
-      // ZATCA: standard TLV base64 per ZATCA spec
-      // Standard/Simplified: simple base64 JSON payload (scannable by any QR reader)
-      let zatcaQrCode: string | undefined;
-      if (invoiceType === "zatca" || invoiceType === "simplified") {
-        // ZATCA-style TLV QR (works even without full ZATCA certification)
-        zatcaQrCode = buildZatcaQrPayload(sellerName, vatNumber || "0000000000000000", timestamp, invoiceData.totalAmount, taxAmount);
-      } else {
-        // Standard invoice: simple readable QR (seller, total, date, vat)
-        const simpleQrObj = {
-          seller: sellerName,
-          total: invoiceData.totalAmount,
-          tax: taxAmount,
-          date: invoiceData.date,
-          invoice: invoiceData.invoiceNumber,
-        };
-        zatcaQrCode = Buffer.from(JSON.stringify(simpleQrObj)).toString("base64");
-      }
-
-      // ZATCA XML only for real ZATCA invoices
-      const zatcaXml = invoiceType === "zatca"
-        ? buildSaudiInvoiceXml({
-            invoiceNumber: invoiceData.invoiceNumber,
+      // Non-ZATCA ("standard") invoices keep the simple readable QR. ZATCA
+      // invoices (standard/simplified) are finalised AFTER insert by the
+      // Phase-2 pipeline so the 9-tag QR, UUID, ICV, hash and XAdES signature
+      // are all persisted together and reconcile to the stored amounts.
+      const isZatcaInvoice = invoiceType === "zatca" || invoiceType === "simplified";
+      const zatcaQrCode: string | undefined = isZatcaInvoice
+        ? undefined
+        : Buffer.from(JSON.stringify({
+            seller: sellerName,
+            total: invoiceData.totalAmount,
+            tax: taxAmount,
             date: invoiceData.date,
-            sellerName,
-            vatNumber,
-            crNumber: settings?.crNumber,
-            currency,
-            subTotal: invoiceData.subTotal,
-            taxAmount,
-            totalAmount: invoiceData.totalAmount,
-          })
-        : undefined;
+            invoice: invoiceData.invoiceNumber,
+          })).toString("base64");
+      const zatcaXml: string | undefined = undefined;
       // Resolve customerId — 0 or undefined means walk-in/cash customer
       const explicitBillCustomer = !!(invoiceData.customerId && invoiceData.customerId > 0);
       let resolvedCustomerId = explicitBillCustomer ? invoiceData.customerId : null;
@@ -774,6 +761,41 @@ export const salesRouter = createRouter({
         console.error("[notify] onInvoiceCreated error:", err)
       );
 
+      // ---- ZATCA Phase 2 finalisation (single pipeline) ----
+      // Generates UUID + ICV + PIH + UBL 2.1 + XAdES signature + 9-tag QR and
+      // stores every artefact. It also reconciles header totals to line totals
+      // so BR-CO-15 / BR-S-08 cannot drift by 0.01 SAR.
+      if (isZatcaInvoice) {
+        try {
+          const lines: ZatcaLineInput[] = items.map((item) => ({
+            description: item.description,
+            descriptionAr: item.descriptionAr,
+            quantity: Number(item.quantity) || 0,
+            unitPrice: item.unitPrice,
+            taxPercent: item.taxPercent ?? taxPercent,
+            taxCategory: Number(item.taxPercent ?? taxPercent) === 0 ? "Z" : "S",
+            unitCode: "PCE",
+          }));
+          await finalizeZatcaInvoice({
+            tenantId,
+            invoiceId: id,
+            documentType: invoiceData.customerVat ? "standard" : "simplified",
+            invoiceNumber: invoiceData.invoiceNumber,
+            issueDate: invoiceData.date,
+            issueTime: invoiceData.time || undefined,
+            currency,
+            seller: sellerFromSettings(settings),
+            buyer: buyerFromInvoice(invoiceData, null),
+            lines,
+            headerDiscount: invoiceData.discountAmount,
+            paymentType: invoiceData.paymentType,
+            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
+          });
+        } catch (zatcaError) {
+          console.error("[zatca] Phase 2 finalisation failed for invoice", id, zatcaError);
+        }
+      }
+
       return { id, success: true };
     }),
 
@@ -912,7 +934,7 @@ export const salesRouter = createRouter({
             zatcaStatus = "pending";
           } else {
             zatcaXml = null;
-            zatcaStatus = "simplified";
+            zatcaStatus = "pending";
           }
         } else {
           zatcaQrCode = Buffer.from(JSON.stringify({
@@ -1029,6 +1051,39 @@ export const salesRouter = createRouter({
               createdBy: ctx.user.id,
             });
           }
+        }
+      }
+
+      // Re-sign after an edit (only pending invoices reach this point — the
+      // guard above blocks reported/cleared rows).
+      if (invoiceType === "zatca" || invoiceType === "simplified") {
+        try {
+          const finalLines: ZatcaLineInput[] = (items ?? oldItemRows).map((item: any) => ({
+            description: item.description || "Item",
+            descriptionAr: item.descriptionAr,
+            quantity: Number(item.quantity) || 0,
+            unitPrice: item.unitPrice,
+            taxPercent: item.taxPercent ?? taxPercent,
+            taxCategory: Number(item.taxPercent ?? taxPercent) === 0 ? "Z" : "S",
+            unitCode: item.unit || "PCE",
+          }));
+          await finalizeZatcaInvoice({
+            tenantId,
+            invoiceId,
+            documentType: (invoiceData.customerVat || existingInvoice.customerVat) ? "standard" : "simplified",
+            invoiceNumber: invoiceData.invoiceNumber || existingInvoice.invoiceNumber,
+            issueDate: invoiceData.date || existingInvoice.date,
+            issueTime: invoiceData.time || existingInvoice.time || undefined,
+            currency,
+            seller: sellerFromSettings(settings),
+            buyer: buyerFromInvoice({ ...existingInvoice, ...invoiceData }, null),
+            lines: finalLines,
+            headerDiscount: invoiceData.discountAmount,
+            paymentType: invoiceData.paymentType || existingInvoice.paymentMethod,
+            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
+          });
+        } catch (zatcaError) {
+          console.error("[zatca] Phase 2 re-finalisation failed for invoice", invoiceId, zatcaError);
         }
       }
 
@@ -1175,7 +1230,90 @@ export const salesRouter = createRouter({
           });
         }
       }
-      return { id, success: true };
+
+      // ---- Legal credit-note invoice (UBL 381 + BillingReference) ----
+      // A credit note is an e-invoice in its own right. The creditNotes row
+      // above stays for the legacy UI; this row is what ZATCA receives.
+      let zatcaCreditInvoiceId: number | null = null;
+      try {
+        const original = input.invoiceId
+          ? await db.query.invoices.findFirst({
+              where: and(eq(invoices.id, input.invoiceId), eq(invoices.tenantId, tenantId)),
+            })
+          : null;
+        const settings = await db.query.companySettings.findFirst({
+          where: eq(companySettings.tenantId, tenantId),
+        });
+        const gross = Math.max(0, Number(input.amount) || 0);
+        const net = Number((gross / 1.15).toFixed(2));
+        const vat = Number((gross - net).toFixed(2));
+        const originalStatus = original
+          ? await db.query.zatcaInvoiceStatus.findFirst({
+              where: and(
+                eq(zatcaInvoiceStatus.tenantId, tenantId),
+                eq(zatcaInvoiceStatus.invoiceId, original.id),
+              ),
+            })
+          : null;
+        const cnNumber = `CN-${input.creditNoteNumber}`.slice(0, 50);
+        const [{ id: cnInvoiceId }] = await db.insert(invoices).values({
+          tenantId,
+          invoiceNumber: cnNumber,
+          invoiceType: original?.invoiceType === "simplified" ? "simplified" : "zatca",
+          customerId: input.customerId,
+          date: input.date,
+          subTotal: net.toFixed(2),
+          taxAmount: vat.toFixed(2),
+          taxPercent: "15",
+          totalAmount: gross.toFixed(2),
+          discountAmount: "0",
+          paidAmount: "0",
+          balanceDue: "0",
+          notes: head || "Credit note",
+          status: "credit_note",
+          zatcaStatus: "pending",
+        }).$returningId();
+        zatcaCreditInvoiceId = cnInvoiceId;
+
+        await db.insert(invoiceItems).values({
+          invoiceId: cnInvoiceId,
+          description: head || "Credit note",
+          quantity: 1,
+          unitPrice: net.toFixed(2),
+          taxPercent: "15",
+          totalAmount: net.toFixed(2),
+        });
+
+        if (original) {
+          await finalizeZatcaInvoice({
+            tenantId,
+            invoiceId: cnInvoiceId,
+            documentType: "credit_note",
+            invoiceNumber: cnNumber,
+            issueDate: input.date,
+            currency: settings?.defaultCurrency || "SAR",
+            seller: sellerFromSettings(settings),
+            buyer: buyerFromInvoice(original, null),
+            lines: [{
+              description: head || "Credit note",
+              quantity: 1,
+              unitPrice: net.toFixed(2),
+              taxPercent: 15,
+              taxCategory: "S",
+            }],
+            billingReference: {
+              id: original.invoiceNumber,
+              uuid: originalStatus?.invoiceUuid || undefined,
+            },
+            instructionNote: head || "Credit note",
+            environment: settings?.zatcaSandbox === false ? "production" : "sandbox",
+          });
+        }
+      } catch (zatcaError) {
+        console.error("[zatca] credit note finalisation failed", zatcaError);
+      }
+
+      return { id, success: true, invoiceId: zatcaCreditInvoiceId };
     }),
 
   creditNoteGet: authedQuery

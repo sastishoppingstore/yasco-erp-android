@@ -1,25 +1,52 @@
 import { createHash } from "node:crypto";
 import { getDb } from "../../queries/connection";
-import { and, eq, desc, isNull, sql } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { zatcaInvoiceStatus } from "@db/schema";
 
-export const EMPTY_HASH = createHash("sha256").update("").digest("base64");
+/**
+ * ZATCA Phase 2 hash chain.
+ *
+ * Rules (Security Features Implementation Standards):
+ *  - The first invoice's PIH is base64(SHA-256("0")).
+ *  - Every following PIH is simply the previous invoice's hash
+ *    (it is NOT re-hashed with the current invoice).
+ *  - ICV is a strictly sequential counter per tenant/EGS device.
+ *
+ * The production path is `allocateCounter()` in ./phase2.ts (advisory lock +
+ * MAX(icv)+1). These helpers exist for callers that need the same semantics.
+ */
 
-function sha256Base64(xml: string): string {
-  return createHash("sha256").update(xml, "utf-8").digest("base64");
+export const EMPTY_HASH = createHash("sha256").update("0").digest("base64");
+
+function sha256Base64(value: string): string {
+  return createHash("sha256").update(value, "utf-8").digest("base64");
 }
 
 function canonicalize(xml: string): string {
-  return xml.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/>\s+</g, "><").trim();
+  return xml
+    .replace(/<\?xml[^?]*\?>/gi, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/>\s+</g, "><")
+    .trim();
 }
 
 export function computeInvoiceXmlHash(xml: string): string {
   return sha256Base64(canonicalize(xml));
 }
 
-export function computePih(previousInvoiceHash: string | null, currentInvoiceHash: string): string {
-  const prev = previousInvoiceHash || EMPTY_HASH;
-  return sha256Base64(prev + currentInvoiceHash);
+/**
+ * PIH(n) = invoiceHash(n-1). The `currentInvoiceHash` argument is kept for
+ * backwards compatibility but intentionally ignored — mixing it in breaks
+ * ZATCA chain verification.
+ */
+export function computePih(
+  previousInvoiceHash: string | null,
+  _currentInvoiceHash?: string,
+): string {
+  return previousInvoiceHash && previousInvoiceHash.length > 0
+    ? previousInvoiceHash
+    : EMPTY_HASH;
 }
 
 export async function getLastInvoiceHash(tenantId: number): Promise<string | null> {
@@ -28,8 +55,7 @@ export async function getLastInvoiceHash(tenantId: number): Promise<string | nul
     where: and(eq(zatcaInvoiceStatus.tenantId, tenantId)),
     orderBy: desc(zatcaInvoiceStatus.invoiceCounter),
   });
-  if (!last?.invoiceHash) return null;
-  return last.invoiceHash;
+  return last?.invoiceHash || null;
 }
 
 export async function getOrCreatePihChain(tenantId: number): Promise<{
@@ -42,10 +68,10 @@ export async function getOrCreatePihChain(tenantId: number): Promise<{
     orderBy: desc(zatcaInvoiceStatus.invoiceCounter),
   });
 
-  const previousInvoiceHash = lastStatus?.invoiceHash || EMPTY_HASH;
-  const invoiceCounter = (lastStatus?.invoiceCounter || 0) + 1;
-
-  return { previousInvoiceHash, invoiceCounter };
+  return {
+    previousInvoiceHash: lastStatus?.invoiceHash || EMPTY_HASH,
+    invoiceCounter: Number(lastStatus?.invoiceCounter || 0) + 1,
+  };
 }
 
 export async function recordInvoiceHash(
@@ -54,16 +80,26 @@ export async function recordInvoiceHash(
   invoiceHash: string,
   previousInvoiceHash: string,
   invoiceCounter: number,
-  uuid: string,
+  invoiceUuid: string,
 ): Promise<void> {
   const db = getDb();
-  await db.insert(zatcaInvoiceStatus).values({
-    tenantId,
-    invoiceId,
+  const existing = await db.query.zatcaInvoiceStatus.findFirst({
+    where: and(
+      eq(zatcaInvoiceStatus.tenantId, tenantId),
+      eq(zatcaInvoiceStatus.invoiceId, invoiceId),
+    ),
+  });
+  const values = {
     invoiceHash,
     previousInvoiceHash,
     invoiceCounter,
-    uuid,
-    status: "pending",
-  } as any);
+    invoiceUuid,
+    status: "pending" as const,
+    updatedAt: new Date(),
+  };
+  if (existing) {
+    await db.update(zatcaInvoiceStatus).set(values).where(eq(zatcaInvoiceStatus.id, existing.id));
+  } else {
+    await db.insert(zatcaInvoiceStatus).values({ tenantId, invoiceId, ...values });
+  }
 }

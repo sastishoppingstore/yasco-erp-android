@@ -26,17 +26,25 @@ async function processSubmission(job: { data: TaxJobData }): Promise<{ status: s
     });
 
     if (!credential) throw new Error("ZATCA credentials not configured for tenant");
-    if (type === "zatca-clearance" && !credential.productionCsid) {
+    if (type === "zatca-clearance" && !credential.productionCsidEncrypted) {
       throw new Error("Production CSID not available for clearance");
     }
 
     if (!invoiceId) throw new Error("Invoice ID required for ZATCA submission");
 
     const mode = type === "zatca-clearance" ? "clearance" : "reporting";
-    const result = await submitInvoice(tenantId, invoiceId, mode);
+    const result = await submitInvoice({
+      tenantId,
+      invoiceId,
+      mode,
+      environment: credential.environment === "production" ? "production" : "sandbox",
+    });
 
     if (result.status === "rejected" || result.status === "failed") {
-      throw new Error(result.errorMessage || `ZATCA ${mode} failed`);
+      // Only retry transient failures; a 400 rejection is permanent.
+      const error: any = new Error(result.errorMessage || `ZATCA ${mode} failed`);
+      error.retryable = result.retryable === true;
+      throw error;
     }
 
     return { status: result.status, zatcaRequestId: result.zatcaRequestId };
