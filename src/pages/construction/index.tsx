@@ -364,7 +364,7 @@ export default function ConstructionDashboard() {
             en="Management & follow-up"
             extra={`${(sahl as any)?.invoiceCount ?? 0} ${rtl ? "فاتورة" : "invoices"} · ${(sahl as any)?.customerCount ?? 0} ${rtl ? "عميل" : "customers"}`}
           />
-          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-2 gap-1.5 lg:grid-cols-3">
             {mgmtTiles.map((t) => <SahlRow key={t.label} t={t} />)}
           </div>
         </section>
