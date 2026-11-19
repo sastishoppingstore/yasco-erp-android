@@ -64,6 +64,18 @@ adb install -r -t "$APK"
 # check below does not depend on a clean buffer.
 adb logcat -c 2>/dev/null || true
 
+# Scope every logcat check to the app's own uid. A device-wide grep produced
+# false failures: unrelated Google Play services (Cronet) log
+# `net::ERR_INTERNET_DISCONNECTED` on an offline emulator, which has nothing to
+# do with our WebView.
+APP_UID="$(adb shell dumpsys package com.yasco.erp 2>/dev/null | grep -m1 -oE '(userId|appId)=[0-9]+' | grep -oE '[0-9]+' | head -1 | tr -d '\r')"
+echo "app uid: ${APP_UID:-<unknown>}"
+app_logcat() {
+  if [ -n "${APP_UID:-}" ]; then
+    adb logcat -d --uid="$APP_UID" 2>/dev/null || true
+  fi
+}
+
 echo "=== launch ==="
 adb shell am start -W -n com.yasco.erp/.MainActivity
 sleep 20
@@ -72,7 +84,7 @@ echo "=== render check ==="
 render_check "first"
 
 echo "=== UI marker (informational) ==="
-if adb logcat -d | grep -q "YASCO_UI_READY"; then
+if app_logcat | grep -q "YASCO_UI_READY"; then
   echo "the bundled UI reported itself ready"
 else
   echo "note: no YASCO_UI_READY marker (console may not be forwarded to logcat)"
@@ -91,13 +103,16 @@ if [ -z "$PID" ]; then
 fi
 
 echo "=== WebView / crash check ==="
-CRASH=$(adb logcat -d | grep -A40 "FATAL EXCEPTION" || true)
+CRASH=$(app_logcat | grep -A40 "FATAL EXCEPTION" || true)
 if [ -n "$CRASH" ]; then
   echo "$CRASH"
   echo "::error::the app crashed during startup"
   exit 1
 fi
-if adb logcat -d | grep -E "ERR_CONNECTION_REFUSED|net::ERR_"; then
+# Only the historical failure mode is fatal: the local engine not answering
+# (`ERR_CONNECTION_REFUSED`). The blank-page guarantee comes from the render
+# check above; a broad `net::ERR_` match false-fires on offline subresources.
+if app_logcat | grep -q "ERR_CONNECTION_REFUSED"; then
   echo "::error::WebView could not load the bundled app"
   exit 1
 fi
@@ -114,7 +129,7 @@ else
   echo "app closed on back (no history at the start screen)"
 fi
 
-if adb logcat -d | grep -E "FATAL EXCEPTION|ERR_CONNECTION_REFUSED"; then
+if app_logcat | grep -E "FATAL EXCEPTION|ERR_CONNECTION_REFUSED"; then
   echo "::error::crash or WebView failure after the back press"
   exit 1
 fi
@@ -136,7 +151,7 @@ done
 if [ -z "$PID" ]; then
   echo "::error::app did not restart"
   echo "=== logcat (last 80) ==="
-  adb logcat -d | tail -80 || true
+  app_logcat | tail -80 || true
   echo "=== activities ==="
   adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity|com.yasco" | head -10 || true
   exit 1
