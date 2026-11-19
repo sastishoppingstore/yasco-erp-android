@@ -83,10 +83,13 @@
   var bar = document.getElementById('bar');
   var ONLINE = 'https://yasco.tech/app';
 
-  // The custom scheme is answered by the WebView itself (no socket, no network
-  // policy), so it is tried first. The loopback server is the fallback.
-  var candidates = [{ label: 'built-in', origin: schemeOrigin }];
-  if (port) candidates.push({ label: 'loopback', origin: 'http://127.0.0.1:' + port });
+  // The loopback server is preferred: it is a real HTTP origin, so POST bodies
+  // reach the API proxy intact (WebView scheme interception drops them) and
+  // cookies/localStorage work as on the website. The custom scheme stays as the
+  // guaranteed-screen fallback in case the local socket is not available.
+  var candidates = [];
+  if (port) candidates.push({ label: 'offline', origin: 'http://127.0.0.1:' + port });
+  candidates.push({ label: 'built-in', origin: schemeOrigin });
 
   function log(m) { try { console.log(m + ' ' + location.href); } catch (e) {} }
   function say(t) { statusEl.textContent = t; }

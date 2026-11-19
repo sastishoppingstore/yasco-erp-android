@@ -443,10 +443,12 @@ fn agent() -> &'static ureq::Agent {
 /// IPv6 socket, and then the WebView's `http://127.0.0.1:<port>` request is
 /// refused even though the server is running fine.
 fn bind() -> Result<(Server, u16), String> {
+  // Prefer a fixed port so localStorage / IndexedDB stay on the same origin
+  // across launches (cookies ignore the port, storage keys do not).
   let attempts = [
-    SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
     SocketAddr::from((Ipv4Addr::LOCALHOST, 41235)),
     SocketAddr::from((Ipv4Addr::LOCALHOST, 41236)),
+    SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
   ];
 
   let mut last = String::from("no candidate address");

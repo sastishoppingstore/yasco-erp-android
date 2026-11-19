@@ -11,12 +11,12 @@ wrapper.
 │  boot.html  (Tauri asset protocol — always renders, even offline)     │
 │      │  probes the local engines, then opens the app                  │
 │      ▼                                                                │
-│  WebView ──► http://erp.localhost/app/        (primary, no socket)    │
+│  WebView ──► http://127.0.0.1:<port>/app/     (primary, real HTTP)     │
 │      │           │                                                    │
 │      │           ├── static assets ──► embedded dist (in the binary)  │
 │      │           └── /api/*        ──► https://yasco.tech             │
 │      │                                                                │
-│      └────► http://127.0.0.1:<port>/app/      (fallback, loopback)    │
+│      └────► http://erp.localhost/app/         (fallback, no socket)   │
 │                  └── same static assets + same /api proxy             │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -24,11 +24,15 @@ wrapper.
 Two local layers expose the **same origin** for the UI and the API (`route()`
 answers both):
 
-* **Custom URI scheme** (`erp` → `http://erp.localhost` on Android). The WebView
-  answers these requests itself, so there is **no TCP socket, no cleartext
-  policy and no network round trip** — which is what makes the first screen
-  reliable on Android Go and on old/ROM-modified System WebViews.
-* **Loopback HTTP server** on `127.0.0.1`, kept as a fallback.
+* **Loopback HTTP server** on `127.0.0.1` (port `41235`, then `41236`, then any
+  free port). This is the primary layer: because it is a real HTTP origin, POST
+  bodies reach the API proxy intact, so login and every mutation work. A fixed
+  port keeps `localStorage`/`IndexedDB` on the same origin across launches.
+* **Custom URI scheme** (`erp` → `http://erp.localhost` on Android), kept as the
+  guaranteed-screen fallback. The WebView answers these requests itself, so
+  there is no TCP socket and no cleartext policy — but Android's
+  `shouldInterceptRequest` does **not** hand over request bodies, so
+  POST/mutations only work through the loopback layer.
 
 Because the page and `/api/*` share one origin, the existing cookie based
 authentication works unchanged — the live server needs **no CORS or config
