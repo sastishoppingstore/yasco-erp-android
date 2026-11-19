@@ -81,7 +81,7 @@
   var actions = document.getElementById('actions');
   var diag = document.getElementById('diag');
   var bar = document.getElementById('bar');
-  var ONLINE = 'https://yasco.tech/app/';
+  var ONLINE = 'https://yasco.tech/app';
 
   // The custom scheme is answered by the WebView itself (no socket, no network
   // policy), so it is tried first. The loopback server is the fallback.
@@ -117,8 +117,8 @@
         bar.classList.add('hidden');
         statusEl.textContent = 'Loading YASCO ERP...';
         log('YASCO_BOOT_OK ' + candidate.origin + ' files=' + (window.__YASCO_FILES || '?'));
-        try { location.replace(candidate.origin + '/app/'); }
-        catch (e) { window.location.href = candidate.origin + '/app/'; }
+        try { location.replace(candidate.origin + '/app'); }
+        catch (e) { window.location.href = candidate.origin + '/app'; }
       } else {
         pick(index + 1);
       }

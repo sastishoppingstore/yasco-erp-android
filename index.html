@@ -1,6 +1,46 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      /*
+       * Android shell entry guard.
+       *
+       * Inside the app there must be no marketing landing page: the app has to
+       * open at the login screen (or the ERP directly when a session already
+       * exists). The web site keeps its landing page untouched, so this runs
+       * only on the app's own origins (`erp.localhost`, loopback) or when the
+       * Rust shell injected the flag.
+       *
+       * It runs before any bundle or CSS is fetched, so there is no flash of
+       * the wrong page.
+       */
+      (function () {
+        try {
+          var host = location.hostname;
+          var isApp =
+            window.__YASCO_APP === true ||
+            host === "erp.localhost" ||
+            host === "127.0.0.1" ||
+            /(^|\.)localhost$/.test(host);
+          if (!isApp) return;
+
+          var path = location.pathname.replace(/\/+$/, "") || "/";
+          var hasToken = false;
+          try {
+            hasToken = !!localStorage.getItem("erp_sid");
+          } catch (e) {}
+
+          var target = null;
+          if (path === "/" || path === "/index.html") {
+            target = hasToken ? "/app" : "/login";
+          } else if (path === "/app" && !hasToken) {
+            // Fresh install / signed out: go straight to the login screen.
+            target = "/login";
+          }
+          if (target) location.replace(target);
+        } catch (e) {}
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>YASCO - Enterprise Resource Planning System</title>

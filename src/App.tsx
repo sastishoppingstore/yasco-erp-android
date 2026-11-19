@@ -10,6 +10,18 @@ const oldPrefixes = [
   "settings", "platform",
 ];
 
+/*
+ * True when the bundle runs inside the Android shell (or the Rust shell
+ * injected its flag). The app never shows the public marketing landing page —
+ * it opens at the login screen / ERP — while the web site keeps it.
+ */
+const isAppShell =
+  typeof window !== "undefined" &&
+  (((window as unknown as { __YASCO_APP?: boolean }).__YASCO_APP === true) ||
+    window.location.hostname === "erp.localhost" ||
+    window.location.hostname === "127.0.0.1" ||
+    /(^|\.)localhost$/.test(window.location.hostname));
+
 function OldPathRedirect() {
   const { pathname, search } = useLocation();
   const firstSegment = pathname.split("/")[1];
@@ -556,8 +568,12 @@ export default function App() {
       </div>
     }>
     <Routes>
-      {/* Public landing page */}
-      <Route path="/" element={<Landing />} />
+      {/* Public landing page — web only; the Android app skips it and goes
+          straight to the ERP (login screen when no session exists). */}
+      <Route
+        path="/"
+        element={isAppShell ? <Navigate to="/app" replace /> : <Landing />}
+      />
       <Route path="/login" element={<Login />} />
       <Route path="/sahl-login" element={<SahlLogin />} />
       <Route path="/register" element={<RegisterBusiness />} />

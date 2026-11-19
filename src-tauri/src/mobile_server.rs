@@ -615,6 +615,7 @@ pub fn open_window(
 /// be able to break the app.
 fn boot_script(port: u16) -> String {
   let template = r#"
+window.__YASCO_APP = true;
 window.__YASCO_PORT = __PORT__;
 window.__YASCO_STATUS = __STATUS__;
 window.__YASCO_SCHEME = __SCHEME__;
