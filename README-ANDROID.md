@@ -1,28 +1,39 @@
 # YASCO ERP — Android
 
 Android build of the YASCO ERP. The complete front-end (`dist`) is **bundled
-inside the APK** and served by an in-app loopback HTTP server; the app is not a
-remote-URL wrapper.
+inside the APK** and served locally by the app itself; it is not a remote-URL
+wrapper.
 
 ```
-┌──────────────────────────── APK ────────────────────────────┐
-│  Tauri (Rust) shell                                          │
-│                                                              │
-│  WebView ──► http://127.0.0.1:<random>/app/                  │
-│                 │                                            │
-│                 ├── static assets  ──► embedded dist (memory)│
-│                 └── /api/*         ──► https://yasco.tech    │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────── APK ─────────────────────────────────┐
+│  Tauri (Rust) shell                                                   │
+│                                                                       │
+│  boot.html  (Tauri asset protocol — always renders, even offline)     │
+│      │  probes the local engines, then opens the app                  │
+│      ▼                                                                │
+│  WebView ──► http://erp.localhost/app/        (primary, no socket)    │
+│      │           │                                                    │
+│      │           ├── static assets ──► embedded dist (in the binary)  │
+│      │           └── /api/*        ──► https://yasco.tech             │
+│      │                                                                │
+│      └────► http://127.0.0.1:<port>/app/      (fallback, loopback)    │
+│                  └── same static assets + same /api proxy             │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-* The UI is the Vite build of this repository (`npm run build:frontend`).
-* `/api/*` is reverse-proxied to the hosted ERP, so the existing cookie based
-  authentication works unchanged — the live server needs **no CORS or config
-  change**.
-* `Set-Cookie` responses are rewritten to first-party cookies (the WebView runs
-  on `127.0.0.1`).
-* Because the shell is local, the app opens instantly and never shows a
-  browser-hosted page.
+Two local layers expose the **same origin** for the UI and the API (`route()`
+answers both):
+
+* **Custom URI scheme** (`erp` → `http://erp.localhost` on Android). The WebView
+  answers these requests itself, so there is **no TCP socket, no cleartext
+  policy and no network round trip** — which is what makes the first screen
+  reliable on Android Go and on old/ROM-modified System WebViews.
+* **Loopback HTTP server** on `127.0.0.1`, kept as a fallback.
+
+Because the page and `/api/*` share one origin, the existing cookie based
+authentication works unchanged — the live server needs **no CORS or config
+change** — and `Set-Cookie` responses are rewritten to first-party cookies.
+
 
 ## Install
 
@@ -42,8 +53,8 @@ GitHub Actions → **Android Build** → *Run workflow*, or push to `main`.
 
 | Workflow | Purpose |
 | --- | --- |
-| `android.yml` | Release build (universal, 4 ABIs), signed APK, published to GitHub Releases |
-| `android-smoke.yml` | Boots emulators for Android 8.0, 10, 12 and 14, installs the APK and checks WebView + back button |
+| `android.yml` | Release build (ARM phones), signed APK, published to GitHub Releases |
+| `android-smoke.yml` | Boots emulators for Android 7.0 → 15, installs the APK, checks the UI actually painted (screenshot), no crash, back button and cold restart |
 
 Every push produces `android-build-<n>` in this repository and `v1.0.<n>` in the
 public download repository (Actions artifact storage is not used).
@@ -105,16 +116,28 @@ Limitations worth knowing:
 * Conflicts are resolved by the server when the queued change is applied; there
   is no field level merge.
 
+## Supported Android versions
+
+minSdk 24 (Android 7.0) and targetSdk 35 (Android 15); the app also runs on
+Android 16. It is verified on emulators for **Android 7.0, 8.0, 10, 12, 13, 14
+and 15**, including a cold restart, and the release APK carries both the 64-bit
+(`arm64-v8a`) and 32-bit (`armeabi-v7a`) ARM libraries so low-RAM Android Go
+phones are covered too.
+
 ## Splash screen and logo
 
 * The launcher icon is a real 3D mark generated from
-  `assets/branding/yasco-logo.svg` by `scripts/make-branding.py`
-  (`npx tauri icon` writes the Android mipmaps afterwards).
+  `assets/branding/yasco-logo.svg` by `scripts/make-branding.py`; the whole
+  Android/iOS/Windows icon set is regenerated from the 1024 px artwork by
+  `scripts/make-icons.py` (ImageMagick only, no `node_modules`).
 * Android's `windowBackground` is replaced with a brand gradient + logo
   layer-list (`res/drawable/ys_splash.xml`), so there is no white flash while
   the WebView boots.
 * `index.html` contains an inline splash overlay (logo, wordmark, progress
   bar) that fades out as soon as the bundle loads, with a 6 s hard fallback.
+* `appdist-stub/boot.html` is the very first screen: it probes both local
+  engines and opens whichever answers, so the user always sees branded UI
+  instead of a WebView error page.
 
 ## Install troubleshooting (phone)
 
@@ -128,16 +151,18 @@ Limitations worth knowing:
 * Allow "Install unknown apps" for the browser and confirm Play Protect's
   "Install anyway" prompt when it appears.
 
-## Back button
-
 ## Build verification
 
 CI fails the build unless `apksigner verify` reports V1, V2 **and** V3, `aapt
 dump badging` shows `minSdk 24`, `targetSdk 35`, the expected `versionCode`,
-`INTERNET` permission and all four ABIs. After publishing, the public asset is
-downloaded again and compared by SHA-256 (a truncated upload is the usual cause
-of *"package appears to be invalid"*), and the VPS mirror is checked the same
-way.
+`INTERNET` permission and the required ABIs (`arm64-v8a` + `armeabi-v7a`). After
+publishing, the public asset is downloaded again and compared by SHA-256 (a
+truncated upload is the usual cause of *"package appears to be invalid"*), and
+the VPS mirror is checked the same way. The emulator smoke test additionally
+screenshots the running app and fails if too few colours are present (a blank
+WebView or a Chromium error page paints almost nothing).
+
+## Back button
 
 `tauri android init` generates a `MainActivity` that inherits
 `handleBackNavigation = false`, which closes the app from any screen. During CI,

@@ -20,3 +20,7 @@ pm2.config.cjs
 /release.keystore
 *.apk
 *.aab
+
+# Python bytecode
+__pycache__/
+*.pyc

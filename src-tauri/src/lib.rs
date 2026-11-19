@@ -69,14 +69,24 @@ pub fn run() {
     get_mac_address,
   ]);
 
+  // Android: the bundled ERP is served through a custom URI scheme
+  // (`http://erp.localhost`). The WebView answers those requests itself, so the
+  // first screen never depends on a TCP socket, the cleartext policy or the
+  // network — which is what makes it reliable on Android Go and old WebViews.
+  #[cfg(target_os = "android")]
+  let builder = builder.register_asynchronous_uri_scheme_protocol(
+    mobile_server::SCHEME,
+    |ctx, request, responder| mobile_server::scheme_protocol(ctx, request, responder),
+  );
+
   builder
     .setup(|app| {
-      // Android: the whole ERP is bundled in the APK and served from a
-      // loopback HTTP server so the existing cookie auth keeps working.
+      // Android: the whole ERP is bundled in the APK. Start the loopback
+      // fallback (best effort) and open the boot page, which picks whichever
+      // local origin answers so the app always shows a screen offline.
       #[cfg(target_os = "android")]
       {
-        let port = mobile_server::start()
-          .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+        let port = mobile_server::start();
         mobile_server::open_window(app, port)?;
       }
 

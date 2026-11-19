@@ -30,6 +30,34 @@ echo "=== android version ==="
 adb shell getprop ro.build.version.release || true
 adb shell getprop ro.build.version.sdk || true
 
+# A surviving process is not proof that the UI painted: a WebView error page or
+# a blank screen keeps the app alive too. The ERP always draws its branded
+# splash/UI, which has hundreds of distinct colours at 64x64, so a nearly
+# uniform screenshot means nothing rendered.
+render_check() {
+  local tag="$1"
+  adb exec-out screencap -p > "/tmp/ys-render-$tag.png" 2>/dev/null || return 0
+  python3 - "/tmp/ys-render-$tag.png" "$tag" <<'PY'
+import sys
+try:
+    from PIL import Image
+except Exception:
+    print("pillow missing; skipping render check")
+    sys.exit(0)
+path, tag = sys.argv[1], sys.argv[2]
+try:
+    im = Image.open(path).convert("RGB").resize((64, 64))
+except Exception as exc:
+    print(f"render[{tag}]: cannot read screenshot ({exc}); skipping")
+    sys.exit(0)
+uniq = len(im.getcolors(64 * 64) or [])
+print(f"render[{tag}]: unique colours = {uniq}")
+if uniq < 24:
+    print("::error::the WebView painted nothing (blank screen)")
+    sys.exit(1)
+PY
+}
+
 echo "=== install ==="
 adb install -r -t "$APK"
 # `logcat -c` fails on some older images while logd is still starting; the
@@ -39,6 +67,16 @@ adb logcat -c 2>/dev/null || true
 echo "=== launch ==="
 adb shell am start -W -n com.yasco.erp/.MainActivity
 sleep 20
+
+echo "=== render check ==="
+render_check "first"
+
+echo "=== UI marker (informational) ==="
+if adb logcat -d | grep -q "YASCO_UI_READY"; then
+  echo "the bundled UI reported itself ready"
+else
+  echo "note: no YASCO_UI_READY marker (console may not be forwarded to logcat)"
+fi
 
 echo "=== foreground activity ==="
 adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3 || true
@@ -104,6 +142,10 @@ if [ -z "$PID" ]; then
   exit 1
 fi
 echo "restarted with pid $PID"
+
+echo "=== render check after cold start ==="
+sleep 10
+render_check "cold"
 
 echo "=== foreground activity after restart ==="
 adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3 || true

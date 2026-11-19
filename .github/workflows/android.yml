@@ -106,8 +106,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Every ABI the Play Store / OEM phones may ask for.
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          # Only the phone ABIs are built (the x86 targets were emulator-only).
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Cache Rust
         uses: swatinem/rust-cache@v2

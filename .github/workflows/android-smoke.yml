@@ -6,7 +6,7 @@ name: Android Smoke Test (emulator)
 #     ERR_CONNECTION_REFUSED — that would mean the loopback server died),
 #   * the hardware back button does not crash the app.
 #
-# Covers the Android versions the customers actually use: 8.0, 10, 12, 14.
+# Covers the Android versions the customers actually use: 7.0 through 15.
 # Kept separate from the release workflow so a flaky emulator can never block
 # a release build. Run it manually from the Actions tab.
 
@@ -16,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "src-tauri/**"
+      - "appdist-stub/**"
       - "src/lib/offline/**"
       - "src/components/OfflineBar.tsx"
       - "index.html"
@@ -141,8 +142,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Android 8.0, 10, 12, 14
-        api: [26, 29, 31, 34]
+        # Android 7, 8.0, 10, 12, 13, 14, 15 — the range customers actually use.
+        api: [24, 26, 29, 31, 33, 34, 35]
 
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +157,14 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+
+      # Used by emulator-smoke.sh to prove the WebView actually painted instead
+      # of only proving the process survived.
+      - name: Install Pillow (screenshot render check)
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pillow \
+            || python3 -m pip install --quiet pillow \
+            || echo "Pillow unavailable; the render check will be skipped"
 
       - name: Run on emulator
         uses: reactivecircus/android-emulator-runner@v2

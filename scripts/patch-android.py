@@ -6,8 +6,8 @@ every change the app needs is applied here, idempotently, right after init:
 
 1. `AndroidManifest.xml`
    * `INTERNET` permission (the API is reached over https),
-   * `usesCleartextTraffic` because the ERP is served by the app's own
-     loopback server on http://127.0.0.1:<port>.
+   * `usesCleartextTraffic` + an explicit `networkSecurityConfig` so the local
+     engine is reachable even on ROMs that ignore the cleartext shorthand.
 
 2. `build.gradle.kts`
    * `compileSdk` / `targetSdk` 35 (Play requirement),
@@ -58,6 +58,16 @@ def patch_manifest() -> str:
             count=1,
         )
 
+    # Explicit network security config: some Android Go / OEM ROMs ignore the
+    # `usesCleartextTraffic` shorthand and otherwise block the loopback engine.
+    if "networkSecurityConfig" not in text:
+        text = re.sub(
+            r"<application\b",
+            '<application android:networkSecurityConfig="@xml/network_security_config"',
+            text,
+            count=1,
+        )
+
     if "android.permission.INTERNET" not in text:
         text = text.replace(
             "<application",
@@ -69,7 +79,37 @@ def patch_manifest() -> str:
         path.write_text(text, encoding="utf-8")
     cleartext = "usesCleartextTraffic" in text
     internet = "android.permission.INTERNET" in text
-    return f"manifest: cleartext={cleartext} internet={internet}"
+    nsc = "networkSecurityConfig" in text
+    return f"manifest: cleartext={cleartext} internet={internet} nsc={nsc}"
+
+
+def patch_network_security() -> str:
+    """Allow cleartext to the app's own loopback engine on every ROM.
+
+    The custom-scheme engine needs no cleartext at all, but the loopback
+    fallback talks to `http://127.0.0.1`. Keeping the config explicit avoids the
+    handful of OEM ROMs (mostly Go edition) that ignore `usesCleartextTraffic`.
+    """
+    xml = RES / "xml" / "network_security_config.xml"
+    xml.parent.mkdir(parents=True, exist_ok=True)
+    xml.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">yasco.tech</domain>
+    </domain-config>
+</network-security-config>
+""",
+        encoding="utf-8",
+    )
+    return "network security: cleartext allowed for loopback + yasco.tech"
 
 
 BACK_NAV = """
@@ -223,6 +263,7 @@ def patch_splash() -> str:
 
 def main() -> None:
     print(patch_manifest())
+    print(patch_network_security())
     print(patch_gradle())
     print(patch_main_activity())
     print(copy_icons())

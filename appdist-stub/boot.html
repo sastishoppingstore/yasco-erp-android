@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>YASCO ERP</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(120% 80% at 50% 32%, #1b3563 0%, #0b1730 52%, #04070f 100%);
+    color: #e8eefc;
+    font-family: "Tajawal", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom);
+    -webkit-user-select: none; user-select: none;
+  }
+  .wrap { width: 100%; max-width: 420px; text-align: center; }
+  .mark { width: min(46vw, 190px); height: auto; border-radius: 28px; }
+  h1 { margin: 22px 0 0; font-size: clamp(26px, 8vw, 38px); font-weight: 800; letter-spacing: .24em; }
+  h1 span { color: #f5b301; }
+  .tag { margin-top: 10px; font-size: clamp(10px, 2.9vw, 13px); letter-spacing: .3em; text-transform: uppercase; color: #9db4dd; }
+  .bar { margin: 30px auto 0; width: min(52vw, 220px); height: 3px; border-radius: 99px; background: rgba(148,180,255,.18); overflow: hidden; }
+  .bar i { display: block; width: 42%; height: 100%; border-radius: inherit;
+           background: linear-gradient(90deg, transparent, #5b8ef7 35%, #f5b301 70%, transparent);
+           animation: slide 1.15s ease-in-out infinite; }
+  @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+  #status { margin-top: 18px; font-size: 14px; line-height: 1.5; color: #9db4dd; min-height: 21px; }
+  #actions { margin-top: 22px; display: none; gap: 12px; flex-direction: column; }
+  #actions.show { display: flex; }
+  button {
+    appearance: none; border: 0; border-radius: 14px; padding: 14px 18px;
+    font: inherit; font-weight: 700; cursor: pointer;
+  }
+  #retry { background: rgba(148,180,255,.16); color: #e8eefc; }
+  #online { background: linear-gradient(135deg, #4b7ff0, #1d4ed8); color: #fff; }
+  #diag { margin-top: 20px; font-size: 11px; line-height: 1.6; color: #6f86ad; white-space: pre-wrap; word-break: break-word; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <svg class="mark" viewBox="0 0 1024 1024" role="img" aria-label="YASCO ERP">
+      <defs>
+        <radialGradient id="bg" cx="50%" cy="32%" r="82%">
+          <stop offset="0%" stop-color="#1d3563"/><stop offset="46%" stop-color="#0b1730"/><stop offset="100%" stop-color="#03060d"/>
+        </radialGradient>
+        <linearGradient id="beam" gradientUnits="userSpaceOnUse" x1="300" y1="180" x2="700" y2="760">
+          <stop offset="0%" stop-color="#dcebff"/><stop offset="16%" stop-color="#9dc2ff"/>
+          <stop offset="38%" stop-color="#5c92f8"/><stop offset="68%" stop-color="#2c57be"/><stop offset="100%" stop-color="#16357c"/>
+        </linearGradient>
+        <linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="330" y1="240" x2="700" y2="720">
+          <stop offset="0%" stop-color="#fff3c4"/><stop offset="22%" stop-color="#ffd977"/>
+          <stop offset="52%" stop-color="#f2b62a"/><stop offset="78%" stop-color="#c98a10"/><stop offset="100%" stop-color="#8f5f05"/>
+        </linearGradient>
+      </defs>
+      <rect width="1024" height="1024" fill="url(#bg)"/>
+      <g stroke-linecap="round" fill="none" transform="translate(14 26)">
+        <path d="M512,504 L512,250 M512,504 L730,630 M512,504 L294,630" stroke="url(#gold)" stroke-width="124"/>
+        <path d="M512,504 L512,250 M512,504 L730,630 M512,504 L294,630" stroke="url(#beam)" stroke-width="112"/>
+      </g>
+    </svg>
+    <h1>YASCO <span>ERP</span></h1>
+    <div class="tag">Enterprise Resource Planning</div>
+    <div class="bar" id="bar"><i></i></div>
+    <div id="status">Starting the offline engine...</div>
+    <div id="actions">
+      <button id="retry" type="button">Try again</button>
+      <button id="online" type="button">Open online ERP</button>
+    </div>
+    <div id="diag"></div>
+  </div>
+
+<script>
+(function () {
+  var schemeOrigin = window.__YASCO_SCHEME || 'http://erp.localhost';
+  var port = window.__YASCO_PORT || 0;
+  var rustStatus = window.__YASCO_STATUS || '';
+  var statusEl = document.getElementById('status');
+  var actions = document.getElementById('actions');
+  var diag = document.getElementById('diag');
+  var bar = document.getElementById('bar');
+  var ONLINE = 'https://yasco.tech/app/';
+
+  // The custom scheme is answered by the WebView itself (no socket, no network
+  // policy), so it is tried first. The loopback server is the fallback.
+  var candidates = [{ label: 'built-in', origin: schemeOrigin }];
+  if (port) candidates.push({ label: 'loopback', origin: 'http://127.0.0.1:' + port });
+
+  function log(m) { try { console.log(m + ' ' + location.href); } catch (e) {} }
+  function say(t) { statusEl.textContent = t; }
+
+  function probe(origin) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var controller = ('AbortController' in window) ? new AbortController() : null;
+      var timer = setTimeout(function () {
+        if (controller) { try { controller.abort(); } catch (e) {} }
+        done(false);
+      }, 3000);
+      function done(ok) { if (settled) return; settled = true; clearTimeout(timer); resolve(ok); }
+      try {
+        fetch(origin + '/health', { cache: 'no-store', signal: controller ? controller.signal : undefined })
+          .then(function (res) { done(!!(res && res.ok)); })
+          .catch(function () { done(false); });
+      } catch (e) { done(false); }
+    });
+  }
+
+  function pick(index) {
+    if (index >= candidates.length) { fail(); return; }
+    var candidate = candidates[index];
+    say('Starting the ' + candidate.label + ' engine...');
+    probe(candidate.origin).then(function (ok) {
+      if (ok) {
+        bar.classList.add('hidden');
+        statusEl.textContent = 'Loading YASCO ERP...';
+        log('YASCO_BOOT_OK ' + candidate.origin + ' files=' + (window.__YASCO_FILES || '?'));
+        try { location.replace(candidate.origin + '/app/'); }
+        catch (e) { window.location.href = candidate.origin + '/app/'; }
+      } else {
+        pick(index + 1);
+      }
+    });
+  }
+
+  var attempts = 0;
+  function boot() {
+    attempts += 1;
+    actions.classList.remove('show');
+    diag.textContent = '';
+    bar.classList.remove('hidden');
+    pick(0);
+  }
+
+  function fail() {
+    bar.classList.add('hidden');
+    say('The offline engine did not answer on this phone.');
+    actions.classList.add('show');
+    diag.textContent = [
+      'diagnostics',
+      'scheme: ' + schemeOrigin + ' -> no answer',
+      'loopback: ' + (port ? 'http://127.0.0.1:' + port : 'not started'),
+      'rust: ' + (rustStatus || 'unknown')
+    ].join('\n');
+    log('YASCO_BOOT_FAIL');
+  }
+
+  document.getElementById('retry').addEventListener('click', function () {
+    if (attempts >= 3) { window.location.reload(); return; }
+    boot();
+  });
+  document.getElementById('online').addEventListener('click', function () { window.location.href = ONLINE; });
+
+  boot();
+})();
+</script>
+</body>
+</html>
