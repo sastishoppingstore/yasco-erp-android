@@ -12,6 +12,7 @@ import {
   buildUblDocument,
   computeTotals,
   assertTotalsReconcile,
+  c14n11,
   round2,
   money,
   invoiceTypeName,
@@ -137,14 +138,49 @@ describe("hash chain", () => {
     expect(computePih(computePih(h1), "again")).toBe(h1);
   });
 
-  it("hashes are stable across cosmetic whitespace", () => {
+  it("C14N is whitespace-significant (cosmetic changes DO change the hash)", () => {
+    // Real C14N 1.1 preserves inter-element text nodes, so reformatting the
+    // XML is a legal-content change, not a no-op.
     const a = computeInvoiceXmlHash("<x><y>1</y></x>");
     const b = computeInvoiceXmlHash("<x>\n  <y>1</y>\n</x>");
-    expect(a).toBe(b);
+    expect(a).not.toBe(b);
+  });
+
+  it("c14n11 is idempotent on an already-canonical document", () => {
+    const doc = '<Invoice xmlns="urn:inv" xmlns:cac="urn:cac"><cac:Foo a="1">x</cac:Foo></Invoice>';
+    const once = c14n11(doc);
+    expect(c14n11(once)).toBe(once);
+  });
+});
+
+describe("C14N 1.1 canonicalisation", () => {
+  it("drops the XML declaration and comments", () => {
+    const out = c14n11('<?xml version="1.0" encoding="UTF-8"?><a><!-- c --><b>1</b></a>');
+    expect(out).toBe("<a><b>1</b></a>");
+  });
+
+  it("renders empty elements as start-end pairs", () => {
+    expect(c14n11("<a><b/></a>")).toBe("<a><b></b></a>");
+  });
+
+  it("keeps declared-but-unused namespace declarations on the element", () => {
+    // Verified against ZATCA's own canonicalizer: a root xmlns:ext with no
+    // ext: descendant SURVIVES (only redundant re-declarations are dropped).
+    const out = c14n11('<a xmlns="urn:d" xmlns:unused="urn:x"><b>1</b></a>');
+    expect(out).toBe('<a xmlns="urn:d" xmlns:unused="urn:x"><b>1</b></a>');
+  });
+
+  it("sorts attributes by namespace URI then local name", () => {
+    // attribute `a` (default/empty ns) sorts before attribute `b` (urn:ns).
+    const out = c14n11('<r b="2" a="1" xmlns:b="urn:ns">x</r>');
+    expect(out).toBe('<r xmlns:b="urn:ns" a="1" b="2">x</r>');
   });
 });
 
 describe("QR TLV", () => {
+  const keyDer = Buffer.concat([Buffer.from([0x30, 0x56]), Buffer.alloc(86, 7)]);
+  // A fake 72-byte ECDSA signature DER (30 48 …) shaped like a real one.
+  const certSigDer = Buffer.concat([Buffer.from([0x30, 0x48]), Buffer.alloc(70, 5)]);
   const fields = {
     sellerName: "YASCO",
     vatNumber: "300995897900003",
@@ -153,8 +189,8 @@ describe("QR TLV", () => {
     vatTotal: 15,
     invoiceHash: "HASH",
     signature: "SIG",
-    publicKey: "PUB",
-    certificateSignature: "CERT",
+    publicKeyDer: keyDer.toString("base64"),
+    certificateSignature: certSigDer.toString("base64"),
   };
 
   it("simplified invoices carry all 9 tags", () => {
@@ -162,9 +198,20 @@ describe("QR TLV", () => {
     expect(tags).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
-  it("standard invoices carry only tags 1-5 before clearance", () => {
-    const tags = decodeTlv(buildQr(fields, "standard")).map((t) => t.tag);
-    expect(tags).toEqual([1, 2, 3, 4, 5]);
+  it("tag 9 (certificate signature) is RAW DER bytes, not base64 text", () => {
+    // Official Security Features hex sample: tag 9 = 30 46 02 21 00 …
+    const raw = Buffer.from(buildQr(fields, "simplified"), "base64");
+    const rawTag9 = raw.subarray(raw.length - certSigDer.length, raw.length);
+    expect(rawTag9.equals(certSigDer)).toBe(true);
+  });
+
+  it("standard (cleared) invoices carry tags 1-8 with tag 8 as RAW SPKI DER", () => {
+    const tags = decodeTlv(buildQr(fields, "cleared")).map((t) => t.tag);
+    expect(tags).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    // Tag 8 must be the raw DER byte string, not its base64 text.
+    const raw = Buffer.from(buildQr(fields, "cleared"), "base64");
+    const rawTag8 = raw.subarray(raw.length - keyDer.length, raw.length);
+    expect(rawTag8.equals(keyDer)).toBe(true);
   });
 
   it("encodes the values verbatim", () => {
@@ -215,7 +262,7 @@ describe("UBL document", () => {
     expect(xml).toContain('<cbc:InvoiceTypeCode name="0200000">388</cbc:InvoiceTypeCode>');
   });
 
-  it("emits a CreditNote (381) with a BillingReference and instruction note", () => {
+  it("emits a credit note (381) with BillingReference and instruction note", () => {
     const { xml } = buildUblDocument({
       documentType: "credit_note",
       invoiceNumber: "CN-1",
@@ -228,14 +275,23 @@ describe("UBL document", () => {
       seller,
       buyer: { name: "Buyer", vatNumber: "311111111111113" },
       lines: [line()],
+      paymentType: "Cash",
       billingReference: { id: "INV-1", uuid: "00000000-0000-0000-0000-000000000000" },
       instructionNote: "Full return",
     });
-    expect(xml).toContain("</CreditNote>");
-    expect(xml).toContain('<cbc:CreditNoteTypeCode name="0100000">381</cbc:CreditNoteTypeCode>');
+    // ZATCA always uses the Invoice root — the 381 code + 0100000 subtype
+    // identify it as a standard credit note (official XML standard).
+    expect(xml).toContain("</Invoice>");
+    expect(xml).not.toContain("</CreditNote>");
+    expect(xml).toContain('<cbc:InvoiceTypeCode name="0100000">381</cbc:InvoiceTypeCode>');
     expect(xml).toContain("<cac:BillingReference>");
     expect(xml).toContain("<cbc:ID>INV-1</cbc:ID>");
-    expect(xml).toContain("<cbc:InstructionNote>Full return</cbc:InstructionNote>");
+    // BR-KSA-17: the reason sits on PaymentMeans, not the Invoice root.
+    expect(xml).toContain(
+      "<cac:PaymentMeans><cbc:PaymentMeansCode>10</cbc:PaymentMeansCode><cbc:InstructionNote>Full return</cbc:InstructionNote></cac:PaymentMeans>",
+    );
+    // BillingReference precedes the ICV/PIH references (XSD sequence order).
+    expect(xml.indexOf("<cac:BillingReference>")).toBeLessThan(xml.indexOf("<cbc:ID>ICV</cbc:ID>"));
   });
 
   it("escapes user content so the XML can never be broken by a name", () => {

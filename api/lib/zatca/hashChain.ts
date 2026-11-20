@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { getDb } from "../../queries/connection";
 import { and, desc, eq } from "drizzle-orm";
 import { zatcaInvoiceStatus } from "@db/schema";
+import { computeInvoiceHash } from "./phase2";
 
 /**
  * ZATCA Phase 2 hash chain.
@@ -23,21 +23,13 @@ import { zatcaInvoiceStatus } from "@db/schema";
 export const EMPTY_HASH =
   "NWZlY2ViNjZmZmM4NmYzOGQ5NTI3ODZjNmQ2OTZjNzljMmRiYzIzOWRkNGU5MWI0NjcyOWQ3M2EyN2ZiNTdlOQ==";
 
-function sha256Base64(value: string): string {
-  return createHash("sha256").update(value, "utf-8").digest("base64");
-}
-
-function canonicalize(xml: string): string {
-  return xml
-    .replace(/<\?xml[^?]*\?>/gi, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/>\s+</g, "><")
-    .trim();
-}
-
+/**
+ * ZATCA invoice hash over the canonical XML. Delegates to the phase2 engine
+ * (true W3C C14N 1.1 — the same transform the live sandbox validator applies
+ * after removing the extensions/signature/QR blocks).
+ */
 export function computeInvoiceXmlHash(xml: string): string {
-  return sha256Base64(canonicalize(xml));
+  return computeInvoiceHash(xml);
 }
 
 /**
