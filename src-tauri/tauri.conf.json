@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "YASCO ERP",
-  "version": "15.7.2",
+  "version": "15.7.3",
   "identifier": "com.yasco.erp",
   "build": {
     "frontendDist": "../dist/public",

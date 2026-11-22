@@ -24,10 +24,6 @@
             /(^|\.)localhost$/.test(host);
 
           var path = location.pathname.replace(/\/+$/, "") || "/";
-          var hasToken = false;
-          try {
-            hasToken = !!localStorage.getItem("erp_sid");
-          } catch (e) {}
 
           if (!isApp) {
             /*
@@ -56,14 +52,25 @@
             return;
           }
 
-          var target = null;
+          // Server-only mode: drop the old offline caches and the legacy
+          // localStorage token. All data now comes from the live server and the
+          // session is the server cookie (exactly like the website). Clearing
+          // the caches also guarantees a stale cached response can never wedge
+          // the app again.
+          try {
+            if (window.indexedDB) {
+              indexedDB.deleteDatabase("erp-offline-cache");
+              indexedDB.deleteDatabase("erp-offline-queue");
+            }
+          } catch (e) {}
+          try { localStorage.removeItem("erp_sid"); } catch (e) {}
+
+          // Open at the login screen. The login page checks the server session
+          // cookie and enters the app directly when a valid session exists, so a
+          // fresh install never shows a spinner before login.
           if (path === "/" || path === "/index.html") {
-            target = hasToken ? "/app" : "/login";
-          } else if (path === "/app" && !hasToken) {
-            // Fresh install / signed out: go straight to the login screen.
-            target = "/login";
+            location.replace("/login");
           }
-          if (target) location.replace(target);
         } catch (e) {}
       })();
     </script>

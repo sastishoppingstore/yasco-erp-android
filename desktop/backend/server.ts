@@ -2,19 +2,15 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { request as httpsRequest } from "node:https";
 import { readFileSync, existsSync, createReadStream, statSync } from "node:fs";
 import { join, extname, normalize } from "node:path";
-import { initDb } from "./sqlite";
-import { serialize } from "./superjson";
-import { handlers, MUTATIONS, AUTH_REQUIRED, authMeHandler, ApiError, type RequestLike } from "./handlers";
-import { startSyncEngine, syncOnce } from "./sync";
-import { setRemoteCookies, clearRemoteCookies, remoteCookieHeader } from "./remote";
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 32145);
 const STATIC_DIR = process.env.ERP_STATIC_DIR || join(process.cwd(), "dist", "public");
-const DB_PATH = process.env.ERP_DB_PATH || join(process.env.APPDATA || process.env.HOME || ".", ".yasco", "erp.sqlite");
 
-initDb(DB_PATH);
-startSyncEngine();
+// Server-only mode: this sidecar is a static file server plus a reverse proxy.
+// It keeps NO local database, no offline handlers and no background sync — all
+// data comes from the live backend, exactly like the website. The only state is
+// the browser session cookie, which is forwarded to the upstream verbatim.
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -34,137 +30,6 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
   ".txt": "text/plain",
 };
-
-function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(";")) {
-    const idx = part.indexOf("=");
-    if (idx > 0) out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
-  }
-  return out;
-}
-
-function parseBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c as Buffer));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
-  });
-}
-
-function parseInputJson(raw: string | undefined): Record<string, { json: unknown }> {
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
-}
-
-interface CookieSetter {
-  name: string;
-  value: string;
-  opts: Record<string, unknown>;
-}
-
-function buildSetCookie(c: CookieSetter): string {
-  const parts = [`${c.name}=${c.value}`];
-  const o = c.opts;
-  if (o.maxAge !== undefined) parts.push(`Max-Age=${o.maxAge}`);
-  if (o.path) parts.push(`Path=${o.path}`);
-  if (o.httpOnly) parts.push("HttpOnly");
-  if (o.sameSite) parts.push(`SameSite=${o.sameSite}`);
-  if (o.secure) parts.push("Secure");
-  return parts.join("; ");
-}
-
-async function handleTrpc(req: IncomingMessage, res: ServerResponse, pathname: string, query: URLSearchParams) {
-  const procNames = pathname.replace(/^\/api\/trpc\/?/, "").split(",").filter(Boolean);
-  if (procNames.length === 0) {
-    res.writeHead(400, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "No procedure path" }));
-    return;
-  }
-  const method = (req.method || "GET").toUpperCase();
-  const isBatch = query.get("batch") === "1";
-  const isGet = method === "GET";
-
-  let inputMap: Record<string, { json: unknown }> = {};
-  if (isGet) {
-    inputMap = parseInputJson(query.get("input") || undefined);
-  } else {
-    const body = await parseBody(req);
-    inputMap = parseInputJson(body);
-  }
-
-  const reqLike: RequestLike = {
-    headers: req.headers as Record<string, string | undefined>,
-    cookies: parseCookies(req.headers.cookie),
-  };
-
-  const setCookies: CookieSetter[] = [];
-  const setCookieFn = (name: string, value: string, opts: Record<string, unknown>) => {
-    setCookies.push({ name, value, opts });
-  };
-
-  const results = await Promise.all(
-    procNames.map(async (proc, i) => {
-      const input = inputMap[String(i)]?.json ?? {};
-      const isMutation = MUTATIONS.has(proc);
-      if (isGet && isMutation) {
-        return errorEnvelope(proc, new ApiError(`Unsupported GET-request to mutation procedure at path "${proc}"`, { code: "METHOD_NOT_SUPPORTED", httpStatus: 405 }));
-      }
-      if (!isGet && !isMutation) {
-        return errorEnvelope(proc, new ApiError(`Unsupported POST-request to query procedure at path "${proc}"`, { code: "METHOD_NOT_SUPPORTED", httpStatus: 405 }));
-      }
-      if (AUTH_REQUIRED.has(proc) && !handlers[proc]) {
-        return errorEnvelope(proc, new ApiError(`Procedure not found: ${proc}`, { code: "NOT_FOUND", httpStatus: 404 }));
-      }
-      if (!handlers[proc]) {
-        return errorEnvelope(proc, new ApiError(`Procedure not found: ${proc}`, { code: "NOT_FOUND", httpStatus: 404 }));
-      }
-      try {
-        if (AUTH_REQUIRED.has(proc) && proc !== "auth.passwordLogin" && proc !== "auth.logout") {
-          authMeHandler(reqLike);
-        }
-        const value = await handlers[proc](input, reqLike, setCookieFn);
-        const ser = serialize(value);
-        return {
-          result: {
-            data: ser,
-          },
-        };
-      } catch (err) {
-        return errorEnvelope(proc, err);
-      }
-    })
-  );
-
-  if (setCookies.length > 0) {
-    res.setHeader("set-cookie", setCookies.map(buildSetCookie));
-  }
-  res.writeHead(200, {
-    "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
-    "cache-control": "no-store",
-  });
-  res.end(JSON.stringify(isBatch ? results : results[0]));
-}
-
-function errorEnvelope(proc: string, err: unknown) {
-  const apiErr = err instanceof ApiError ? err : new ApiError(err instanceof Error ? err.message : String(err));
-  return {
-    error: {
-      json: {
-        message: apiErr.message,
-        code: apiErr.code,
-        data: { code: apiErr.trpcCode, httpStatus: apiErr.httpStatus, path: proc },
-      },
-    },
-  };
-}
 
 function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string) {
   if (!existsSync(STATIC_DIR)) {
@@ -198,14 +63,12 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
 
 // ── Live-backend proxy ───────────────────────────────────────────────
 // The bundled UI is served from loopback, but every `/api/*` call is forwarded
-// to the production Hono backend, so the desktop is a real client of the live
-// ERP (identical data and features to the web app). The first upstream points
-// straight at the origin server (SNI + Host = the real domain) which bypasses
-// Cloudflare, so the app keeps working from regions where the Cloudflare edge
-// blocks or challenges the domain. When no upstream answers, the request falls
-// back to the bundled offline SQLite backend below.
+// to the production backend, so the desktop is a real client of the live ERP
+// (identical data and features to the web app). The public site is tried first
+// (exactly what the website uses); a direct origin-IP fallback covers regions
+// where Cloudflare is blocked. If nothing answers the request gets a 503.
 const UPSTREAMS = (
-  process.env.ERP_REMOTE_URLS || "https://203.161.63.59#yasco.tech,https://yasco.tech"
+  process.env.ERP_REMOTE_URLS || "https://yasco.tech,https://203.161.63.59#yasco.tech"
 )
   .split(",")
   .map((entry) => entry.trim())
@@ -218,8 +81,8 @@ const UPSTREAMS = (
 const PROXY_TIMEOUT_MS = Number(process.env.ERP_PROXY_TIMEOUT_MS || 25000);
 
 // A dead or black-holed upstream must never stall the UI. Cap the connect phase
-// to a few seconds; if nothing connects we move on to the next upstream (or the
-// bundled offline backend) instead of making the app look frozen.
+// to a few seconds; if nothing connects we move on to the next upstream (and
+// ultimately a 503) instead of making the app look frozen.
 const PROXY_CONNECT_TIMEOUT_MS = Number(process.env.ERP_PROXY_CONNECT_TIMEOUT_MS || 4000);
 
 // Index of the upstream that last answered. Later requests try it first, so a
@@ -267,21 +130,13 @@ function readRequestBody(req: IncomingMessage): Promise<Buffer> {
 
 /** Loosen upstream cookies for the loopback http webview origin. */
 function relaxCookies(cookies: string[]): string[] {
-  return cookies.map((c) => c.replace(/;\s*SameSite=None/i, "; SameSite=Lax").replace(/;\s*Secure/i, ""));
-}
-
-/** Remember the live session cookie so the background sync engine can use it. */
-function captureRemoteSession(cookies: string[]): void {
-  try {
-    for (const c of cookies) {
-      const m = /^erp_sid=([^;]*)/.exec(c);
-      if (!m) continue;
-      if (m[1]) setRemoteCookies({ erp_sid: m[1] });
-      else clearRemoteCookies();
-    }
-  } catch {
-    /* ignore */
-  }
+  return cookies.map((c) =>
+    c
+      .replace(/;\s*SameSite=None/i, "; SameSite=Lax")
+      .replace(/;\s*Secure/i, "")
+      .replace(/;\s*Domain=[^;]*/i, "")
+      .replace(/;\s*Partitioned/i, "")
+  );
 }
 
 function proxyOnce(
@@ -317,9 +172,8 @@ function proxyOnce(
     delete headers["transfer-encoding"];
     delete headers["content-length"];
     if (hasBody) headers["content-length"] = String(body.length);
-    const cookieHeader = remoteCookieHeader(req.headers.cookie);
-    if (cookieHeader) headers.cookie = cookieHeader;
-    else delete headers.cookie;
+    // Forward the browser's own session cookie straight to the upstream — the
+    // desktop is a normal client of the live backend, exactly like the website.
     headers["x-forwarded-proto"] = "https";
 
     const send = isTls ? httpsRequest : httpRequest;
@@ -342,9 +196,7 @@ function proxyOnce(
         delete outHeaders["transfer-encoding"];
         const sc = outHeaders["set-cookie"];
         if (sc) {
-          const list = relaxCookies(Array.isArray(sc) ? sc : [sc]);
-          outHeaders["set-cookie"] = list;
-          captureRemoteSession(list);
+          outHeaders["set-cookie"] = relaxCookies(Array.isArray(sc) ? sc : [sc]);
         }
         res.writeHead(proxyRes.statusCode || 502, outHeaders);
         proxyRes.pipe(res);
@@ -437,10 +289,9 @@ function probeUpstream(upstream: { origin: string; servername: string | null }):
 
 /**
  * Pick the first upstream that actually answers and stick to it, so a machine
- * that cannot reach the primary (the raw origin IP) does not pay the connect
- * timeout on every single request. Runs once at startup; if nothing answers we
- * leave the default order and each request simply falls back to the bundled
- * offline backend.
+ * that cannot reach the primary does not pay the connect timeout on every
+ * single request. Runs once at startup; if nothing answers each request simply
+ * returns a 503 until an upstream recovers.
  */
 async function probeUpstreams(): Promise<void> {
   // Probe all upstreams concurrently (each bounded by the connect timeout) and
@@ -458,7 +309,7 @@ async function probeUpstreams(): Promise<void> {
     logDebug(`upstream ready: ${UPSTREAMS[firstOk].origin}`);
     return;
   }
-  logDebug("no upstream reachable at startup; using bundled offline backend");
+  logDebug("no upstream reachable at startup; API requests will return 503 until one recovers");
 }
 
 /** Returns true when an upstream answered (response already streamed). */
@@ -500,22 +351,17 @@ const server = createServer(async (req, res) => {
       // Wait for the upstream probe so we never start with a dead upstream — but
       // never longer than a bounded budget, so a wedged probe cannot stall the UI.
       await withDeadline(upstreamReady, PROXY_CONNECT_TIMEOUT_MS + 3000, undefined);
-      // Prefer the live backend (full parity, real data). If no upstream is
-      // reachable, fall back to the bundled offline SQLite backend so the user
-      // can keep working and the changes sync up once the network returns.
+      // Prefer the live backend (full parity, real data). There is no local
+      // fallback any more: if no upstream answers the client gets the same 503
+      // a browser would get when the site is down.
       const proxied = await proxyToRemote(req, res, url);
       if (proxied) {
         logDebug(`${req.method} ${pathname} -> remote ${res.statusCode} ${Date.now() - started}ms`);
         return;
       }
-      if (pathname.startsWith("/api/trpc")) {
-        await handleTrpc(req, res, pathname, url.searchParams);
-        logDebug(`${req.method} ${pathname} -> offline ${res.statusCode} ${Date.now() - started}ms`);
-        return;
-      }
       res.writeHead(503, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "offline", offline: true }));
-      logDebug(`${req.method} ${pathname} -> 503 offline ${Date.now() - started}ms`);
+      res.end(JSON.stringify({ error: "upstream_unreachable", offline: true }));
+      logDebug(`${req.method} ${pathname} -> 503 upstream unreachable ${Date.now() - started}ms`);
       return;
     }
     serveStatic(req, res, pathname);
@@ -531,10 +377,9 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[desktop] YASCO desktop backend listening on http://${HOST}:${PORT}`);
-  console.log(`[desktop] DB: ${DB_PATH}`);
+  console.log(`[desktop] Mode: server-only (no local DB, no offline cache)`);
   console.log(`[desktop] Static: ${STATIC_DIR}`);
   console.log(`[desktop] Remote upstreams: ${UPSTREAMS.map((u) => u.origin).join(", ")}`);
-  syncOnce().catch(() => {});
 });
 
 process.on("SIGTERM", () => process.exit(0));

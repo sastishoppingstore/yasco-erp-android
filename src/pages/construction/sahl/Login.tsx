@@ -17,10 +17,8 @@ export default function SahlLogin() {
   const [show, setShow] = useState(false);
   const [err, setErr] = useState("");
 
-  const finish = async (data?: { token?: string }) => {
-    if (data?.token) {
-      try { localStorage.setItem("erp_sid", data.token); } catch { /* ignore */ }
-    }
+  const finish = async (_data?: { token?: string }) => {
+    // Server-only mode: the session is the httpOnly cookie set by the server.
     await utils.auth.me.invalidate();
     const redirect = searchParams.get("redirect");
     navigate(redirect && redirect.startsWith("/app") ? redirect : "/app/construction");

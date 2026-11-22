@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router";
 import { Building2, Eye, EyeOff } from "lucide-react";
@@ -38,10 +38,9 @@ export default function Login() {
     ["travel", "/app/verticals/travel/dashboard"],
   ];
 
-  const finishLogin = async (data?: { token?: string }) => {
-    if (data?.token) {
-      localStorage.setItem("erp_sid", data.token);
-    }
+  const finishLogin = async (_data?: { token?: string }) => {
+    // Server-only mode: the session is the httpOnly cookie set by the server
+    // (exactly like the website). Nothing is stored in localStorage.
     await utils.auth.me.invalidate();
     // Guards bounce unauthenticated deep links to /login?redirect=<path> —
     // honor it first so bookmarks (e.g. /app/construction) survive login.
@@ -77,6 +76,26 @@ export default function Login() {
     }
     navigate("/app");
   };
+
+  // If a valid server session already exists (the httpOnly cookie the server
+  // set), skip the form and enter the app. This replaces the old localStorage
+  // "has token" hint without storing any session data locally.
+  const { data: existingUser, isError: sessionError } = trpc.auth.me.useQuery(
+    undefined,
+    { retry: false, staleTime: 30_000 },
+  );
+  const autoEntered = useRef(false);
+  useEffect(() => {
+    if (autoEntered.current) return;
+    // `typeof null === "object"`, so require a real object AND a successful
+    // query — otherwise a signed-out visitor (auth.me → 401) would be bounced
+    // straight into the app shell.
+    if (!sessionError && existingUser && typeof existingUser === "object") {
+      autoEntered.current = true;
+      void finishLogin();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingUser, sessionError]);
 
   const passwordLogin = trpc.auth.passwordLogin.useMutation({
     onSuccess: (data) => finishLogin(data),

@@ -1,10 +1,9 @@
 import { createTRPCReact } from "@trpc/react-query";
-import { httpBatchLink, splitLink, TRPCClientError } from "@trpc/client";
+import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import superjson from "superjson";
 import type { AppRouter } from "../../api/router";
 import type { ReactNode } from "react";
-import { createOfflineFetch } from "@/lib/offline/offlineCache";
 
 export const trpc = createTRPCReact<AppRouter>();
 
@@ -73,24 +72,19 @@ queryClient.getQueryCache().config.onError = (error: any) => {
   }
 };
 
+// Thin client of the same live backend the website uses: every query and
+// mutation goes straight to the server (through the local sidecar proxy) with
+// the server session cookie. There is no IndexedDB query cache and no offline
+// write queue — the browser cookie is the only session state.
+const serverFetch = (input: RequestInfo | URL, init?: RequestInit) =>
+  fetch(input, { ...(init ?? {}), credentials: "include" });
+
 export const trpcClient = trpc.createClient({
   links: [
-    // Queries and mutations are split so only read-only requests are cached
-    // for offline use; mutations are never replayed from the cache.
-    splitLink({
-      condition: (op) => op.type === "query",
-      true: httpBatchLink({
-        url: "/api/trpc",
-        transformer: superjson,
-        headers: { "x-erp-op": "query" },
-        fetch: createOfflineFetch(true),
-      }),
-      false: httpBatchLink({
-        url: "/api/trpc",
-        transformer: superjson,
-        headers: { "x-erp-op": "mutation" },
-        fetch: createOfflineFetch(false),
-      }),
+    httpBatchLink({
+      url: "/api/trpc",
+      transformer: superjson,
+      fetch: serverFetch,
     }),
   ],
 });
