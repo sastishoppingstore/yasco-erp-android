@@ -24,3 +24,7 @@ pm2.config.cjs
 # Python bytecode
 __pycache__/
 *.pyc
+
+# ZATCA sandbox scratch output — contains private keys / CSIDs, never commit
+/zatca-sandbox-out/
+/zatca-work/

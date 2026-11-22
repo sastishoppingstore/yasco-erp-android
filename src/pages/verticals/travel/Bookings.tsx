@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Plane } from "lucide-react";
+import { Plus, Plane, ReceiptText } from "lucide-react";
 
 const statusColors: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700", confirmed: "bg-emerald-100 text-emerald-700",
@@ -16,6 +17,7 @@ const statusColors: Record<string, string> = {
 };
 
 export default function TravelBookingsPage() {
+  const navigate = useNavigate();
   const { data: bookings, refetch } = trpc.travel.bookingList.useQuery(undefined);
   const createBooking = trpc.travel.bookingCreate.useMutation({ onSuccess: () => { refetch(); setOpen(false); } });
   const [open, setOpen] = useState(false);
@@ -53,7 +55,7 @@ export default function TravelBookingsPage() {
         <CardHeader className="pb-2"><CardTitle>All Bookings</CardTitle></CardHeader>
         <CardContent>
           <Table>
-            <TableHeader><TableRow><TableHead>Booking #</TableHead><TableHead>Customer</TableHead><TableHead>Type</TableHead><TableHead>Date</TableHead><TableHead>Source</TableHead><TableHead className="text-right">Gross</TableHead><TableHead className="text-right">Commission</TableHead><TableHead>Status</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Booking #</TableHead><TableHead>Customer</TableHead><TableHead>Type</TableHead><TableHead>Date</TableHead><TableHead>Source</TableHead><TableHead className="text-right">Gross</TableHead><TableHead className="text-right">Commission</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow></TableHeader>
             <TableBody>
               {bookings?.map(b => (
                 <TableRow key={b.id}>
@@ -65,6 +67,11 @@ export default function TravelBookingsPage() {
                   <TableCell className="text-right font-mono">{Number(b.grossAmount).toLocaleString()}</TableCell>
                   <TableCell className="text-right font-mono">{Number(b.commissionAmount).toLocaleString()}</TableCell>
                   <TableCell><Badge className={statusColors[b.status]}>{b.status}</Badge></TableCell>
+                  <TableCell className="text-right">
+                    <Button size="sm" variant="outline" onClick={() => navigate(`/app/verticals/travel/tickets/new?bookingId=${b.id}`)}>
+                      <ReceiptText className="w-4 h-4 mr-1" />Invoice
+                    </Button>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

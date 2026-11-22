@@ -140,6 +140,102 @@ app.use("/api/trpc/*", (c) =>
     createContext,
   }),
 );
+
+// ── Excel → PDF ──────────────────────────────────────────────────────
+// The invoice is printed from the generated .xlsx itself, so the paper copy is
+// byte-for-byte the workbook the user also downloads (same colours, fonts,
+// merged cells, pictures and page setup). A warm LibreOffice bridge
+// (`lo_pdf_worker.py`, UNIX socket) does the conversion so repeated prints are
+// fast; if that bridge is down we fall back to a one-shot headless soffice.
+const SOFFICE = process.env.SOFFICE_PATH || "/usr/bin/soffice";
+const LO_PDF_SOCK = process.env.LO_PDF_SOCK || "/tmp/lo-pdf.sock";
+
+async function convertWithLoWorker(src: string, out: string): Promise<boolean> {
+  const net = await import("node:net");
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      try { sock.destroy(); } catch { /* ignore */ }
+      resolve(ok);
+    };
+    const sock = net.connect(LO_PDF_SOCK);
+    let buf = "";
+    sock.setTimeout(90_000);
+    sock.on("connect", () => sock.write(JSON.stringify({ src, out }) + "\n"));
+    sock.on("data", (d) => {
+      buf += d.toString();
+      if (buf.includes("\n")) finish(buf.split("\n")[0].trim() === "OK");
+    });
+    sock.on("error", () => finish(false));
+    sock.on("timeout", () => finish(false));
+    sock.on("close", () => finish(false));
+  });
+}
+
+async function convertWithSoffice(src: string, outDir: string): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  const { join } = await import("node:path");
+  await new Promise<void>((resolve, reject) => {
+    // Throw-away user profile per request so parallel prints never collide.
+    const profile = join(outDir, "lo-profile");
+    const p = spawn(SOFFICE, [
+      `-env:UserInstallation=file://${profile}`,
+      "--headless", "--norestore", "--nolockcheck",
+      "--convert-to", "pdf:calc_pdf_Export",
+      "--outdir", outDir, src,
+    ]);
+    let err = "";
+    p.stderr?.on("data", (d: any) => { err += String(d); });
+    p.on("error", reject);
+    p.on("close", (code: number) => code === 0 ? resolve() : reject(new Error(err || `soffice exited ${code}`)));
+  });
+}
+
+app.post("/api/sahl/xlsx-pdf", async (c) => {
+  let dir = "";
+  try {
+    const authHeader = c.req.header("authorization") || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    const cookies = c.req.header("cookie") || "";
+    const cookieMatch = cookies.match(/erp_sid=([^;]+)/);
+    const sessionToken = token || cookieMatch?.[1];
+    if (!sessionToken) return c.json({ error: "Unauthorized" }, 401);
+
+    const body: any = await c.req.parseBody();
+    const file: any = body?.file;
+    if (!file || typeof file === "string") return c.json({ error: "file required" }, 400);
+
+    const [{ mkdtemp, writeFile, readFile }, { tmpdir }, { join }] = await Promise.all([
+      import("node:fs/promises"), import("node:os"), import("node:path"),
+    ]);
+
+    dir = await mkdtemp(join(tmpdir(), "sahl-pdf-"));
+    const src = join(dir, "invoice.xlsx");
+    const pdf = join(dir, "invoice.pdf");
+    await writeFile(src, Buffer.from(await file.arrayBuffer()));
+
+    let ok = false;
+    try { ok = await convertWithLoWorker(src, pdf); } catch { ok = false; }
+    if (!ok) await convertWithSoffice(src, dir);
+
+    const buf = await readFile(pdf);
+    const name = String((file as any).name || "invoice.xlsx").replace(/\.xlsx$/i, "");
+    return new Response(new Uint8Array(buf), {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="${name}.pdf"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (e: any) {
+    return c.json({ error: e.message || "PDF export failed" }, 500);
+  } finally {
+    if (dir) { try { const { rm } = await import("node:fs/promises"); await rm(dir, { recursive: true, force: true }); } catch { /* ignore */ } }
+  }
+});
+
 app.all("/api/*", (c) => c.json({ error: "Not Found" }, 404));
 
 export default app;

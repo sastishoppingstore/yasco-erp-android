@@ -22,13 +22,39 @@
             host === "erp.localhost" ||
             host === "127.0.0.1" ||
             /(^|\.)localhost$/.test(host);
-          if (!isApp) return;
 
           var path = location.pathname.replace(/\/+$/, "") || "/";
           var hasToken = false;
           try {
             hasToken = !!localStorage.getItem("erp_sid");
           } catch (e) {}
+
+          if (!isApp) {
+            /*
+             * Web host self-heal.
+             *
+             * A broken legacy service worker used to intercept navigations and
+             * blank the whole site. Whenever this app shell loads on the web
+             * host, drop any registered worker and its caches. If a stale shell
+             * ever lands on "/", also send the visitor to the login page.
+             */
+            try {
+              if ("serviceWorker" in navigator) {
+                navigator.serviceWorker.getRegistrations()
+                  .then(function (rs) { rs.forEach(function (r) { r.unregister(); }); })
+                  .catch(function () {});
+              }
+              if (window.caches && caches.keys) {
+                caches.keys().then(function (keys) {
+                  keys.forEach(function (k) { caches.delete(k); });
+                }).catch(function () {});
+              }
+            } catch (e) {}
+            if (path === "/" || path === "/index.html") {
+              location.replace("/login");
+            }
+            return;
+          }
 
           var target = null;
           if (path === "/" || path === "/index.html") {

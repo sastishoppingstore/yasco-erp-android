@@ -7,6 +7,11 @@ export const btnCls =
 export const btnGreenCls =
   "border border-[#0a5c2a] px-3 py-1 text-[12px] font-bold text-white hover:brightness-110 disabled:opacity-50";
 
+// Shared press affordance: every button reacts on pointer-down, not when the
+// network call finishes, so a click is never mistaken for a missed click.
+export const pressCls =
+  "transition-[transform,filter] duration-75 active:scale-[0.97] active:brightness-150 disabled:opacity-55";
+
 export function SahlField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="mb-1.5 flex items-center gap-2 text-[12px]">
@@ -133,16 +138,19 @@ export function FuncKey({
   label,
   onClick,
   color,
+  disabled,
 }: {
   k: string;
   label: string;
   onClick?: () => void;
   color?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="flex min-w-[64px] flex-col items-center border border-black px-2 py-1.5 text-[11px] leading-tight text-white hover:brightness-110"
+      disabled={disabled}
+      className={`flex min-w-[64px] flex-col items-center border border-black px-2 py-1.5 text-[11px] leading-tight text-white hover:brightness-110 ${pressCls}`}
       style={{ background: color ?? "#455a64" }}
     >
       <span className="font-bold">{k}</span>

@@ -10,9 +10,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Plus, Building } from "lucide-react";
 
+const emptyForm = { name: "", supplierType: "airline", contactPerson: "", email: "", phone: "", commissionPercent: 0 };
+
 export default function SuppliersPage() {
-  const { data: suppliers, refetch } = trpc.travel.supplierList.useQuery(undefined);
+  const utils = trpc.useUtils();
+  const { data: suppliers } = trpc.travel.supplierList.useQuery(undefined);
   const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ ...emptyForm });
+  const set = (k: keyof typeof form, v: any) => setForm((f) => ({ ...f, [k]: v }));
+
+  const create = trpc.travel.supplierCreate.useMutation({
+    onSuccess: () => { utils.travel.supplierList.invalidate(); setOpen(false); setForm({ ...emptyForm }); },
+  });
 
   return (
     <div className="space-y-6">
@@ -22,18 +31,33 @@ export default function SuppliersPage() {
           <DialogTrigger asChild><Button><Plus className="w-4 h-4 mr-2" />Add Supplier</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>New Supplier</DialogTitle></DialogHeader>
-            <form onSubmit={(e) => { e.preventDefault(); setOpen(false); refetch(); }} className="space-y-3">
-              <div><Label>Company Name</Label><Input required /></div>
-              <div><Label>Type</Label><Select><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="airline">Airline</SelectItem><SelectItem value="hotel">Hotel</SelectItem><SelectItem value="car_rental">Car Rental</SelectItem><SelectItem value="tour_operator">Tour Operator</SelectItem><SelectItem value="visa">Visa Service</SelectItem></SelectContent></Select></div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!form.name.trim()) return;
+                create.mutate({
+                  name: form.name.trim(),
+                  supplierType: form.supplierType as any,
+                  contactPerson: form.contactPerson || undefined,
+                  email: form.email || undefined,
+                  phone: form.phone || undefined,
+                  commissionPercent: Number(form.commissionPercent) || 0,
+                });
+              }}
+              className="space-y-3"
+            >
+              <div><Label>Company Name</Label><Input required value={form.name} onChange={(e) => set("name", e.target.value)} /></div>
+              <div><Label>Type</Label><Select value={form.supplierType} onValueChange={(v) => set("supplierType", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="airline">Airline</SelectItem><SelectItem value="hotel">Hotel</SelectItem><SelectItem value="car_rental">Car Rental</SelectItem><SelectItem value="tour_operator">Tour Operator</SelectItem><SelectItem value="visa">Visa Service</SelectItem><SelectItem value="insurance">Insurance</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent></Select></div>
               <div className="grid grid-cols-2 gap-4">
-                <div><Label>Contact Person</Label><Input /></div>
-                <div><Label>Commission %</Label><Input type="number" /></div>
+                <div><Label>Contact Person</Label><Input value={form.contactPerson} onChange={(e) => set("contactPerson", e.target.value)} /></div>
+                <div><Label>Commission %</Label><Input type="number" value={form.commissionPercent} onChange={(e) => set("commissionPercent", Number(e.target.value))} /></div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div><Label>Email</Label><Input type="email" /></div>
-                <div><Label>Phone</Label><Input /></div>
+                <div><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} /></div>
+                <div><Label>Phone</Label><Input value={form.phone} onChange={(e) => set("phone", e.target.value)} /></div>
               </div>
-              <Button type="submit" className="w-full">Add Supplier</Button>
+              {create.isError && <p className="text-sm text-red-600">{String(create.error?.message || "Failed")}</p>}
+              <Button type="submit" className="w-full" disabled={create.isPending}>{create.isPending ? "Saving…" : "Add Supplier"}</Button>
             </form>
           </DialogContent>
         </Dialog>

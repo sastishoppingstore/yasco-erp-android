@@ -3,7 +3,6 @@ import { fileURLToPath } from "url"
 const __dirname = import.meta.dirname || path.dirname(fileURLToPath(import.meta.url))
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
-import { VitePWA } from "vite-plugin-pwa"
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -17,58 +16,14 @@ export default defineConfig({
     react({
       jsxRuntime: "automatic",
     }),
-    VitePWA({
-      registerType: "autoUpdate",
-      includeAssets: ["icon.svg", "manifest.json"],
-      manifest: {
-        name: "ERP System",
-        short_name: "ERP",
-        description: "Enterprise Resource Planning System",
-        theme_color: "#2563eb",
-        background_color: "#ffffff",
-        display: "standalone",
-        scope: "/",
-        start_url: "/",
-        icons: [
-          { src: "icon.svg", sizes: "192x192", type: "image/svg+xml" },
-        ],
-      },
-      workbox: {
-        cleanupOutdatedCaches: true,
-        skipWaiting: true,
-        globPatterns: ["**/*.{js,css,svg,png,ico,json}"],
-        navigateFallback: null,
-        navigateFallbackDenylist: [/^\/api\//],
-        runtimeCaching: [
-          {
-            /* Always prefer fresh index.html online -> stops "Failed to fetch dynamically imported module" */
-            urlPattern: ({ request }: any) => request.mode === "navigate",
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "pages-cache",
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 20 },
-            },
-          },
-          {
-            urlPattern: /^\/assets\//,
-            handler: "CacheFirst",
-            options: {
-              cacheName: "asset-cache",
-              expiration: { maxEntries: 400, maxAgeSeconds: 60 * 60 * 24 * 30 },
-            },
-          },
-          {
-            urlPattern: /^\/api\//,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "api-cache",
-              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 },
-            },
-          },
-        ],
-      },
-    }),
+    // NOTE: the vite-plugin-pwa service worker was removed on purpose.
+    //
+    // The old worker routed every navigation through NetworkFirst; when the
+    // origin was slow it answered `workbox no-response` and the entire site
+    // (landing, /login, /app, travel dashboard) rendered blank. A service
+    // worker that can break navigations is not worth the offline nicety for an
+    // ERP. `public/sw.js` now ships a self-destroying worker that unregisters
+    // itself and clears every cache on the next navigation.
   ],
   server: {
     port: 3000,

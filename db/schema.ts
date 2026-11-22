@@ -826,7 +826,7 @@ export const invoices = mysqlTable("invoices", {
   id: serial("id").primaryKey(),
   tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
   invoiceNumber: varchar("invoice_number", { length: 50 }).notNull(),
-  invoiceType: mysqlEnum("invoice_type", ["standard", "simplified", "zatca"]).default("standard").notNull(),
+  invoiceType: mysqlEnum("invoice_type", ["standard", "simplified", "zatca", "ticket"]).default("standard").notNull(),
   customerId: bigint("customer_id", { mode: "number", unsigned: true }).notNull(),
   orderId: bigint("order_id", { mode: "number", unsigned: true }),
   date: date("date", { mode: "string" }).notNull(),
@@ -876,12 +876,15 @@ export const invoices = mysqlTable("invoices", {
   status: mysqlEnum("status", ["draft", "sent", "paid", "partial", "overdue", "cancelled", "credit_note"]).default("draft").notNull(),
   createdBy: bigint("created_by", { mode: "number", unsigned: true }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Link to the travel vertical's ticket document (travel_invoices.invoice_id)
+  travelInvoiceId: bigint("travel_invoice_id", { mode: "number", unsigned: true }),
 }, (table) => ({
   tenantIdx: index("inv_tenant_idx").on(table.tenantId),
   dateIdx: index("inv_date_idx").on(table.date),
   numIdx: uniqueIndex("inv_num_idx").on(table.tenantId, table.invoiceNumber),
   tenantUuidIdx: uniqueIndex("inv_tenant_uuid_uidx").on(table.tenantId, table.uuid),
   tenantEgsIcvIdx: uniqueIndex("inv_tenant_egs_icv_uidx").on(table.tenantId, table.egsDeviceId, table.icv),
+  tenantTravelInvIdx: index("inv_travel_invoice_idx").on(table.travelInvoiceId),
 }));
 
 export const invoiceItems = mysqlTable("invoice_items", {
@@ -901,6 +904,10 @@ export const invoiceItems = mysqlTable("invoice_items", {
   exemptionReasonCode: varchar("exemption_reason_code", { length: 20 }),
   totalAmount: decimal("total_amount", { precision: 18, scale: 4 }).default("0").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Travel ticket line details (PNR / ticket number / route) shown under the
+  // item description on the printed travel ticket invoice.
+  travelInvoiceId: bigint("travel_invoice_id", { mode: "number", unsigned: true }),
+  ticketRef: varchar("ticket_ref", { length: 100 }),
 });
 
 export const creditNotes = mysqlTable("credit_notes", {
@@ -4685,6 +4692,256 @@ export const supplierReconciliation = mysqlTable("supplier_reconciliation", {
   updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
 }, (table) => [
   index("supplier_reconciliation_tenant_idx").on(table.tenantId),
+]);
+
+// ---- Travel Ticket / Invoice (ZATCA dual-mode) ---------------------------
+//
+// A travel invoice document is the agency's customer-facing ticket/invoice.
+// It carries the 2 option modes:
+//   "zatca"    → full ZATCA e-invoice (simplified B2C): the parent row in the
+//                shared `invoices` table is signed by the Phase-2 pipeline
+//                (UUID / ICV / hash chain / XAdES-B-B / 9-tag QR).
+//   "non_tax"  → plain (non-ZATCA) ticket invoice with a manually chosen VAT
+//                rate (0% or 15% or any custom %).
+// The linked parent `invoices` row is created 1:1 (invoices.travel_invoice_id
+// → travel_invoices.id) so reports, dashboards and the Phase-2 pipeline keep
+// working without changes.
+
+export const travelInvoices = mysqlTable("travel_invoices", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
+  invoiceId: bigint("invoice_id", { mode: "number", unsigned: true }),
+  invoiceNumber: varchar("invoice_number", { length: 50 }).notNull(),
+  /** "zatca" = full ZATCA simplified tax invoice, "non_tax" = manual VAT mode */
+  mode: mysqlEnum("mode", ["zatca", "non_tax"]).notNull(),
+  /** Pricing scheme: "standard" = whole price taxable; "margin" = base fare
+   *  (non-taxable supplier cost) + service fee (taxable agency profit). */
+  pricingMode: mysqlEnum("pricing_mode", ["standard", "margin"]).default("margin").notNull(),
+  /** Margin scheme: is the entered service fee VAT-exclusive or VAT-inclusive? */
+  vatMode: mysqlEnum("vat_mode", ["exclusive", "inclusive"]).default("exclusive").notNull(),
+  /** Actual VAT rate applied (15 for zatca mode; 0/15/custom for non_tax). */
+  vatPercent: decimal("vat_percent", { precision: 5, scale: 2 }).default("15").notNull(),
+  customerId: bigint("customer_id", { mode: "number", unsigned: true }),
+  customerName: varchar("customer_name", { length: 255 }),
+  customerNameAr: varchar("customer_name_ar", { length: 255 }),
+  customerPhone: varchar("customer_phone", { length: 50 }),
+  customerVat: varchar("customer_vat", { length: 15 }),
+  /** Linked booking (optional — a ticket can be created standalone too). */
+  bookingId: bigint("booking_id", { mode: "number", unsigned: true }),
+  bookingNumber: varchar("booking_number", { length: 50 }),
+  /** Travel type of the ticket: flight / hotel / package / car / visa / other */
+  travelType: mysqlEnum("travel_type", ["flight", "hotel", "package", "car_rental", "insurance", "visa", "other"]).default("other").notNull(),
+  /** e.g. "JED-MCT-BOM" (flight routes), hotel name, tour title… */
+  serviceRef: varchar("service_ref", { length: 100 }),
+  /** PNR / reference — printed under the item description. */
+  pnr: varchar("pnr", { length: 50 }),
+  /** Airline / ticket / booking reference — printed under the item description. */
+  ticketNumber: varchar("ticket_number", { length: 50 }),
+  origin: varchar("origin", { length: 255 }),
+  destination: varchar("destination", { length: 255 }),
+  departDate: date("depart_date", { mode: "string" }),
+  arriveDate: date("arrive_date", { mode: "string" }),
+  passengerName: varchar("passenger_name", { length: 255 }),
+  passengerNameAr: varchar("passenger_name_ar", { length: 255 }),
+  date: date("date", { mode: "string" }).notNull(),
+  dueDate: date("due_date", { mode: "string" }),
+  currency: varchar("currency", { length: 10 }).default("SAR").notNull(),
+  subTotal: decimal("sub_total", { precision: 18, scale: 4 }).default("0").notNull(),
+  /** Margin scheme: sum of non-taxable base fares (supplier/airline cost). */
+  nonTaxableAmount: decimal("non_taxable_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  /** Margin scheme: sum of taxable agency service fees (net of VAT). */
+  taxableAmount: decimal("taxable_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  discountAmount: decimal("discount_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  taxAmount: decimal("tax_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  totalAmount: decimal("total_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  paidAmount: decimal("paid_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  balanceDue: decimal("balance_due", { precision: 18, scale: 4 }).default("0").notNull(),
+  paymentMethod: varchar("payment_method", { length: 50 }),
+  notes: text("notes"),
+  notesAr: text("notes_ar"),
+  status: mysqlEnum("status", ["draft", "issued", "paid", "cancelled", "refunded"]).default("issued").notNull(),
+  createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (table) => [
+  index("travel_invoices_tenant_idx").on(table.tenantId),
+  index("travel_invoices_invoice_idx").on(table.invoiceId),
+  index("travel_invoices_booking_idx").on(table.bookingId),
+]);
+
+export const travelInvoiceItems = mysqlTable("travel_invoice_items", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
+  travelInvoiceId: bigint("travel_invoice_id", { mode: "number", unsigned: true }).notNull(),
+  /** Mirrors invoice_items.id once the parent invoice row is created. */
+  invoiceItemId: bigint("invoice_item_id", { mode: "number", unsigned: true }),
+  sku: varchar("sku", { length: 100 }),
+  description: text("description"),
+  descriptionAr: text("description_ar"),
+  /** PNR / ticket number shown under the description on the ticket. */
+  ticketRef: varchar("ticket_ref", { length: 100 }),
+  /** e.g. "JED-MCT-BOM" */
+  route: varchar("route", { length: 100 }),
+  quantity: int("quantity").notNull(),
+  /** Whole unit price (standard) or base fare + service fee (margin). */
+  unitPrice: decimal("unit_price", { precision: 18, scale: 4 }).notNull(),
+  /** Margin scheme: non-taxable supplier/airline base fare for this line. */
+  baseFare: decimal("base_fare", { precision: 18, scale: 4 }).default("0").notNull(),
+  /** Margin scheme: taxable agency service fee / profit for this line. */
+  serviceFee: decimal("service_fee", { precision: 18, scale: 4 }).default("0").notNull(),
+  /** Sum of non-taxable portions on this line (base fare). */
+  nonTaxableAmount: decimal("non_taxable_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  taxPercent: decimal("tax_percent", { precision: 5, scale: 2 }).default("15").notNull(),
+  taxableAmount: decimal("taxable_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  taxAmount: decimal("tax_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  totalAmount: decimal("total_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => [
+  index("travel_invoice_items_tenant_idx").on(table.tenantId),
+  index("travel_invoice_items_inv_idx").on(table.travelInvoiceId),
+]);
+
+// ---- Travel tenant profile (Ministry of Tourism license, etc.) -----------
+
+export const travelSettings = mysqlTable("travel_settings", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull().unique(),
+  /** Ministry of Tourism license number, e.g. "73103883". */
+  tourismLicenseNo: varchar("tourism_license_no", { length: 50 }),
+  /** e.g. "وكيل سفر وسياحه" — printed under the license number. */
+  tourismLicenseTypeAr: varchar("tourism_license_type_ar", { length: 100 }),
+  tourismLicenseTypeEn: varchar("tourism_license_type_en", { length: 100 }),
+  /** Optional: printed on the letterhead right below the company name. */
+  tagline: varchar("tagline", { length: 255 }),
+  taglineAr: varchar("tagline_ar", { length: 255 }),
+  /** Default currency for tickets (falls back to company setting). */
+  defaultCurrency: varchar("default_currency", { length: 10 }).default("SAR").notNull(),
+  /** Default VAT rate used when a non-tax invoice is created. */
+  defaultVatPercent: decimal("default_vat_percent", { precision: 5, scale: 2 }).default("15").notNull(),
+  /** Prefix for travel ticket/invoice numbers, e.g. "TICK-". */
+  invoicePrefix: varchar("invoice_prefix", { length: 20 }).default("TICK-").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (table) => [
+  index("travel_settings_tenant_idx").on(table.tenantId),
+]);
+
+// ---- Travel Sub-module: Passengers directory -----------------------------
+// Passport-level passenger records used by air tickets / visas. Optionally
+// linked to a `customers` row so billing and passenger data stay in sync.
+
+export const travelPassengers = mysqlTable("travel_passengers", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
+  customerId: bigint("customer_id", { mode: "number", unsigned: true }),
+  /** Full name as printed on the passport, e.g. "SAMSAD ALI/MR". */
+  fullName: varchar("full_name", { length: 255 }).notNull(),
+  fullNameAr: varchar("full_name_ar", { length: 255 }),
+  passportNo: varchar("passport_no", { length: 50 }),
+  nationality: varchar("nationality", { length: 100 }),
+  dateOfBirth: date("date_of_birth", { mode: "string" }),
+  passportExpiry: date("passport_expiry", { mode: "string" }),
+  gender: mysqlEnum("gender", ["male", "female"]),
+  phone: varchar("phone", { length: 50 }),
+  whatsapp: varchar("whatsapp", { length: 50 }),
+  email: varchar("email", { length: 320 }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (table) => [
+  index("travel_passengers_tenant_idx").on(table.tenantId),
+  index("travel_passengers_customer_idx").on(table.customerId),
+]);
+
+// ---- Travel Sub-module: Umrah / Tour packages ----------------------------
+
+export const travelPackages = mysqlTable("travel_packages", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
+  code: varchar("code", { length: 50 }),
+  name: varchar("name", { length: 255 }).notNull(),
+  nameAr: varchar("name_ar", { length: 255 }),
+  packageType: mysqlEnum("package_type", ["umrah", "hajj", "tour", "holiday", "corporate"]).default("umrah").notNull(),
+  supplierId: bigint("supplier_id", { mode: "number", unsigned: true }),
+  durationDays: int("duration_days"),
+  nightsMakkah: int("nights_makkah"),
+  nightsMadinah: int("nights_madinah"),
+  /** Per-person components (kept as money for printing/quotes). */
+  costPrice: decimal("cost_price", { precision: 18, scale: 4 }).default("0").notNull(),
+  sellingPrice: decimal("selling_price", { precision: 18, scale: 4 }).default("0").notNull(),
+  currency: varchar("currency", { length: 10 }).default("SAR").notNull(),
+  includes: text("includes"),
+  excludes: text("excludes"),
+  itineraryNotes: text("itinerary_notes"),
+  isActive: boolean("is_active").default(true),
+  notes: text("notes"),
+  createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (table) => [
+  index("travel_packages_tenant_idx").on(table.tenantId),
+  index("travel_packages_type_idx").on(table.packageType),
+]);
+
+// ---- Travel Sub-module: Visa processing ----------------------------------
+
+export const travelVisas = mysqlTable("travel_visas", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
+  referenceNumber: varchar("reference_number", { length: 50 }),
+  passengerId: bigint("passenger_id", { mode: "number", unsigned: true }),
+  customerId: bigint("customer_id", { mode: "number", unsigned: true }),
+  passengerName: varchar("passenger_name", { length: 255 }).notNull(),
+  passportNo: varchar("passport_no", { length: 50 }),
+  nationality: varchar("nationality", { length: 100 }),
+  visaType: mysqlEnum("visa_type", ["umrah", "visit", "work", "business", "transit", "hajj", "other"]).default("umrah").notNull(),
+  visaCountry: varchar("visa_country", { length: 100 }),
+  supplierId: bigint("supplier_id", { mode: "number", unsigned: true }),
+  applicationDate: date("application_date", { mode: "string" }),
+  issueDate: date("issue_date", { mode: "string" }),
+  expiryDate: date("expiry_date", { mode: "string" }),
+  costAmount: decimal("cost_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  feeAmount: decimal("fee_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  currency: varchar("currency", { length: 10 }).default("SAR").notNull(),
+  status: mysqlEnum("status", ["draft", "submitted", "processing", "approved", "rejected", "issued", "cancelled"]).default("draft").notNull(),
+  notes: text("notes"),
+  createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (table) => [
+  index("travel_visas_tenant_idx").on(table.tenantId),
+  index("travel_visas_status_idx").on(table.status),
+]);
+
+// ---- Travel Sub-module: Hotel bookings -----------------------------------
+
+export const travelHotels = mysqlTable("travel_hotels", {
+  id: serial("id").primaryKey(),
+  tenantId: bigint("tenant_id", { mode: "number", unsigned: true }).notNull(),
+  bookingRef: varchar("booking_ref", { length: 50 }),
+  customerId: bigint("customer_id", { mode: "number", unsigned: true }),
+  passengerName: varchar("passenger_name", { length: 255 }).notNull(),
+  hotelName: varchar("hotel_name", { length: 255 }).notNull(),
+  hotelCity: varchar("hotel_city", { length: 100 }),
+  roomType: varchar("room_type", { length: 100 }),
+  rooms: int("rooms").default(1),
+  guests: int("guests").default(1),
+  checkIn: date("check_in", { mode: "string" }),
+  checkOut: date("check_out", { mode: "string" }),
+  nights: int("nights"),
+  supplierId: bigint("supplier_id", { mode: "number", unsigned: true }),
+  costAmount: decimal("cost_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  sellingAmount: decimal("selling_amount", { precision: 18, scale: 4 }).default("0").notNull(),
+  currency: varchar("currency", { length: 10 }).default("SAR").notNull(),
+  status: mysqlEnum("status", ["draft", "confirmed", "cancelled", "completed"]).default("confirmed").notNull(),
+  notes: text("notes"),
+  createdBy: bigint("created_by", { mode: "number", unsigned: true }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull().$onUpdate(() => new Date()),
+}, (table) => [
+  index("travel_hotels_tenant_idx").on(table.tenantId),
+  index("travel_hotels_status_idx").on(table.status),
 ]);
 
 // =====================================================

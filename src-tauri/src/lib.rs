@@ -185,12 +185,22 @@ fn create_main_window(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Er
   // on_download handler can be attached. Tauri/WebView2 drops downloads by
   // default, which silently broke the invoice xlsx (Excel) export in the app.
   //
+  // IMPORTANT: the window loads the ERP from the local Node sidecar
+  // (`http://127.0.0.1:32145`), NOT from the live website. The whole front-end
+  // is bundled inside the installer, so the UI paints instantly and keeps
+  // working even when the domain is down or blocked. The sidecar reverse-
+  // proxies `/api/*` to the production backend (and falls back to its bundled
+  // offline SQLite store when there is no network), so the data is still the
+  // real server data whenever the machine is online. Because the origin is a
+  // loopback host, `index.html`'s entry guard sends the app straight to
+  // `/login` and never shows the marketing landing page.
+  //
   // Sizing: default 1280x800, then shrunk to fit the actual monitor so the
   // bottom action bars / save buttons are never off-screen on small laptops.
   let win = tauri::WebviewWindowBuilder::new(
     app,
     "main",
-    tauri::WebviewUrl::External("https://yasco.tech/app/construction".parse()?),
+    tauri::WebviewUrl::External("http://127.0.0.1:32145/".parse()?),
   )
   .title("YASCO ERP")
   .inner_size(1280.0, 800.0)

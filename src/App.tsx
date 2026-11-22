@@ -484,6 +484,16 @@ const TravelBookings = lazy(() => import("./pages/verticals/travel/Bookings"));
 const TravelSuppliers = lazy(() => import("./pages/verticals/travel/Suppliers"));
 const TravelItineraries = lazy(() => import("./pages/verticals/travel/Itineraries"));
 const TravelReconciliation = lazy(() => import("./pages/verticals/travel/Reconciliation"));
+const TravelDashboard = lazy(() => import("./pages/verticals/travel/Dashboard"));
+const TravelTicketCreate = lazy(() => import("./pages/verticals/travel/TicketCreate"));
+const TravelTickets = lazy(() => import("./pages/verticals/travel/Tickets"));
+const TravelPassengers = lazy(() => import("./pages/verticals/travel/Passengers"));
+const TravelPackages = lazy(() => import("./pages/verticals/travel/Packages"));
+const TravelVisas = lazy(() => import("./pages/verticals/travel/Visas"));
+const TravelHotels = lazy(() => import("./pages/verticals/travel/Hotels"));
+const TravelSettings = lazy(() => import("./pages/verticals/travel/Settings"));
+const TravelMarginReport = lazy(() => import("./pages/verticals/travel/MarginReport"));
+const ModuleGate = lazy(() => import("./components/ModuleGate"));
 const AviationFlights = lazy(() => import("./pages/verticals/aviation/Flights"));
 const AviationCrew = lazy(() => import("./pages/verticals/aviation/Crew"));
 const AviationMaintenance = lazy(() => import("./pages/verticals/aviation/Maintenance"));
@@ -876,13 +886,16 @@ export default function App() {
       <Route path="/app/verticals/hotel/events" element={<LayoutWrapper><HotelEvents /></LayoutWrapper>} />
 
       {/* Construction Verticals */}
-      <Route path="/app/verticals/construction" element={<LayoutWrapper><ConstructionProjects /></LayoutWrapper>} />
-      <Route path="/app/verticals/construction/projects" element={<LayoutWrapper><ConstructionProjects /></LayoutWrapper>} />
-      <Route path="/app/verticals/construction/subcontractors" element={<LayoutWrapper><ConstructionSubcontractors /></LayoutWrapper>} />
-      <Route path="/app/verticals/construction/equipment" element={<LayoutWrapper><ConstructionEquipment /></LayoutWrapper>} />
-      <Route path="/app/verticals/construction/progress-billing" element={<LayoutWrapper><ConstructionProgressBilling /></LayoutWrapper>} />
-      <Route path="/app/verticals/construction/invoices" element={<Navigate to="/app/construction/sahl/sales" replace />} />
-      <Route path="/app/verticals/construction/quality" element={<LayoutWrapper><ConstructionQuality /></LayoutWrapper>} />
+      {/* Classic construction vertical — module-gated so a travel tenant can
+          never open construction (and vice-versa) even by direct URL. Lenient
+          keeps legacy tenants with no module rows working. */}
+      <Route path="/app/verticals/construction" element={<LayoutWrapper><ModuleGate module="construction" lenient><ConstructionProjects /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/construction/projects" element={<LayoutWrapper><ModuleGate module="construction" lenient><ConstructionProjects /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/construction/subcontractors" element={<LayoutWrapper><ModuleGate module="construction" lenient><ConstructionSubcontractors /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/construction/equipment" element={<LayoutWrapper><ModuleGate module="construction" lenient><ConstructionEquipment /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/construction/progress-billing" element={<LayoutWrapper><ModuleGate module="construction" lenient><ConstructionProgressBilling /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/construction/invoices" element={<ModuleGate module="construction" lenient><Navigate to="/app/construction/sahl/sales" replace /></ModuleGate>} />
+      <Route path="/app/verticals/construction/quality" element={<LayoutWrapper><ModuleGate module="construction" lenient><ConstructionQuality /></ModuleGate></LayoutWrapper>} />
 
       {/* Transport Verticals */}
       <Route path="/app/verticals/transport" element={<LayoutWrapper><TransportFleet /></LayoutWrapper>} />
@@ -904,11 +917,20 @@ export default function App() {
       <Route path="/app/verticals/real-estate/tenants" element={<LayoutWrapper><RealEstateTenants /></LayoutWrapper>} />
 
       {/* Travel Verticals */}
-      <Route path="/app/verticals/travel" element={<LayoutWrapper><TravelBookings /></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/bookings" element={<LayoutWrapper><TravelBookings /></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/suppliers" element={<LayoutWrapper><TravelSuppliers /></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/itineraries" element={<LayoutWrapper><TravelItineraries /></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/reconciliation" element={<LayoutWrapper><TravelReconciliation /></LayoutWrapper>} />
+      <Route path="/app/verticals/travel" element={<LayoutWrapper><ModuleGate module="travel"><TravelBookings /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/bookings" element={<LayoutWrapper><ModuleGate module="travel"><TravelBookings /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/suppliers" element={<LayoutWrapper><ModuleGate module="travel"><TravelSuppliers /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/itineraries" element={<LayoutWrapper><ModuleGate module="travel"><TravelItineraries /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/reconciliation" element={<LayoutWrapper><ModuleGate module="travel"><TravelReconciliation /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/dashboard" element={<LayoutWrapper><ModuleGate module="travel"><TravelDashboard /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/tickets" element={<LayoutWrapper><ModuleGate module="travel"><TravelTickets /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/tickets/new" element={<LayoutWrapper><ModuleGate module="travel"><TravelTicketCreate /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/passengers" element={<LayoutWrapper><ModuleGate module="travel"><TravelPassengers /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/packages" element={<LayoutWrapper><ModuleGate module="travel"><TravelPackages /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/visas" element={<LayoutWrapper><ModuleGate module="travel"><TravelVisas /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/hotels" element={<LayoutWrapper><ModuleGate module="travel"><TravelHotels /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/settings" element={<LayoutWrapper><ModuleGate module="travel"><TravelSettings /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel/margin-report" element={<LayoutWrapper><ModuleGate module="travel"><TravelMarginReport /></ModuleGate></LayoutWrapper>} />
 
       {/* Aviation Verticals */}
       <Route path="/app/verticals/aviation" element={<LayoutWrapper><AviationFlights /></LayoutWrapper>} />
@@ -998,7 +1020,7 @@ export default function App() {
       {/* Construction Module Routes (standalone Sahl shell — NO AppLayout
           wrapper, so the whole tree stays Sahl-styled: dashboard, header,
           sidebar and every sub-page). */}
-      <Route path="/app/construction" element={<ConstructionLayout />}>
+      <Route path="/app/construction" element={<ModuleGate module="construction" lenient><ConstructionLayout /></ModuleGate>}>
         <Route index element={<ConstructionDashboard />} />
         <Route path="warehouses" element={<WarehousesPage />} />
         <Route path="stock" element={<StockLevelsPage />} />

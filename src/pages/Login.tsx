@@ -35,7 +35,7 @@ export default function Login() {
     ["hotel", "/app/verticals/hotel"],
     ["real_estate", "/app/verticals/real-estate"],
     ["transport", "/app/verticals/transport"],
-    ["travel", "/app/verticals/travel"],
+    ["travel", "/app/verticals/travel/dashboard"],
   ];
 
   const finishLogin = async (data?: { token?: string }) => {
@@ -63,6 +63,17 @@ export default function Login() {
       }
     } catch {
       /* fall through to default home */
+    }
+    // Travel-configured tenants (they have a travel_settings row) may not have
+    // tenant_modules rows yet — still land them on the 3D Travel dashboard.
+    try {
+      const travel = await utils.travel.settingsGet.fetch();
+      if ((travel as any)?.settings) {
+        navigate("/app/verticals/travel/dashboard");
+        return;
+      }
+    } catch {
+      /* not a travel tenant */
     }
     navigate("/app");
   };

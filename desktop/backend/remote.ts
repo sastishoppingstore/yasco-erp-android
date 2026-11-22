@@ -38,6 +38,29 @@ export function clearRemoteCookies() {
   saveCookies({});
 }
 
+/** Snapshot of the stored upstream cookies (used by the API proxy). */
+export function getRemoteCookies(): Record<string, string> {
+  return { ...loadCookies() };
+}
+
+/**
+ * Build a cookie header for an upstream request. The webview's own `erp_sid`
+ * may belong to the bundled offline backend (a different signer), so it is
+ * replaced with the cookie captured from the live backend whenever we have one.
+ */
+export function remoteCookieHeader(browserCookie: string | undefined): string {
+  const jar = loadCookies();
+  const others = (browserCookie || "")
+    .split(";")
+    .map((c) => c.trim())
+    .filter(Boolean)
+    .filter((c) => !c.startsWith("erp_sid="));
+  const parts: string[] = [];
+  if (jar.erp_sid) parts.push(`erp_sid=${jar.erp_sid}`);
+  parts.push(...others);
+  return parts.join("; ");
+}
+
 export function remoteSessionActive(): boolean {
   const jar = loadCookies();
   return Boolean(jar.erp_sid);

@@ -5,9 +5,11 @@ import { trpc } from "@/providers/trpc";
 import { useLanguage } from "@/providers/language";
 import { inputCls, btnCls, btnGreenCls, FuncKey } from "./ui";
 import {
-  DOC_TITLES, downloadBlob, printInvoice060, renderXlsx, render060, renderTemplateXlsx, zatcaQrTlv,
+  DOC_TITLES, downloadBlob, printInvoice060, renderXlsx, render060, renderTemplateXlsx,
+  zatcaQrTlv, zatcaTimestamp, printCompany,
   type DocData, type PrintConfig,
 } from "./printEngine";
+import { DEFAULT_DESIGN_KEY, designsForTenant, designByKey, lockedDesignKey } from "./invoiceDesigns";
 
 // Survives component remounts within the SPA session: last saved invoice no
 // so a print/xlsx right after save carries the SAVED number (Sahl behavior).
@@ -33,6 +35,14 @@ const TITLES: Record<TxnKind, { ar: string; en: string; color: string }> = {
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+// Exactly one payment mode is active at a time (radio group). The caption never
+// changes when a mode is selected — "Credit/Deferred" is one mode, Card is another.
+const PAY_MODES: { k: "cash" | "credit" | "card"; ar: string; en: string }[] = [
+  { k: "cash", ar: "نقدي", en: "Cash" },
+  { k: "credit", ar: "آجل", en: "Credit" },
+  { k: "card", ar: "شبكة", en: "Card" },
+];
 
 // F11 settlement: tendered cash -> change calculator. Enter commits.
 function SettlementModal({ T, total, tendered, setTendered, onClose, onCommit }: {
@@ -139,6 +149,16 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
   // Quotation validity / purchase payment terms (printed below the totals).
   const [terms, setTerms] = useState("");
   const userName = (user as any)?.name ?? (user as any)?.username ?? "";
+  // Cashier shown on the create screen, saved with the invoice and printed in
+  // <Data:cashier>. Pre-filled with the logged-in user, still editable.
+  const [cashierName, setCashierName] = useState("");
+  const cashier = (cashierName || userName).trim() || undefined;
+  useEffect(() => { if (userName) setCashierName((c) => c || userName); }, [userName]);
+  // Invoice number typed on this screen (printed in <Data:no>). It is prefilled
+  // with the next short number (1, 2, 3 …) and stays editable like the other
+  // details; editing a saved invoice changes its number.
+  const [invNo, setInvNo] = useState("");
+  const invNoTouched = useRef(false);
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
   const [priceListId, setPriceListId] = useState("");
@@ -222,6 +242,9 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
   const [f7Ship, setF7Ship] = useState("");
   // coral partial-payment flow (credit save) + receipt voucher
   const [creditAsk, setCreditAsk] = useState<{ id: number; total: number } | null>(null);
+  // A saved credit invoice can still take a part-payment receipt, but only when
+  // the cashier presses the receipt button — never as a popup that blocks saving.
+  const [receiptOffer, setReceiptOffer] = useState<{ id: number; total: number } | null>(null);
   const [rOpen, setROpen] = useState(false);
   const [rAmt, setRAmt] = useState("");
   const [rCat, setRCat] = useState("مبيعات");
@@ -307,6 +330,17 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
 
   const resetCd = () => setCd({ name: "", nameAr: "", phone: "", email: "", address: "", addressAr: "", vat: "", cr: "" });
   const history: any[] = kind === "sales" ? invoices ?? [] : kind === "purchase" ? pos ?? [] : kind === "quotation" ? quotes ?? [] : kind === "sales-return" ? credits ?? [] : pos ?? [];
+  // Next short number: highest plain numeric invoice already saved + 1. The old
+  // INV-<timestamp> numbers are ignored so the sequence stays 1, 2, 3 …
+  let maxInvNo = 0;
+  for (const h of history as any[]) {
+    const m = /^(\d{1,9})$/.exec(String(h.invoiceNumber ?? "").trim());
+    if (m) maxInvNo = Math.max(maxInvNo, Number(m[1]));
+  }
+  const nextInvNo = String(maxInvNo + 1);
+  useEffect(() => {
+    if (kind === "sales" && !isViewing && !savedNo && !invNoTouched.current) setInvNo(nextInvNo);
+  }, [kind, isViewing, savedNo, nextInvNo]);
   const results = useMemo(() => (lookup ?? []) as any[], [lookup]);
   const { data: balances } = trpc.inventory.inventoryList.useQuery(
     (kind === "purchase" || kind === "sales") && wh ? { warehouseId: Number(wh) } : undefined,
@@ -503,6 +537,9 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
       const savedPm = String(inv?.paymentMethod ?? "").toLowerCase();
       setPayMode(savedPm === "credit" ? "credit" : savedPm === "card" ? "card" : "cash");
       setReason(String(inv?.notes ?? ""));
+      setCashierName(String(inv?.cashier ?? "") || userName);
+      setInvNo(String(inv?.invoiceNumber ?? ""));
+      setReference(String(inv?.poNumber ?? ""));
       setInvType(String(inv?.invoiceType ?? "") === "standard" ? "simple" : "zatca");
       setDocDate(String(inv?.date ?? today()).slice(0, 10));
       setMsg(editParam
@@ -573,6 +610,11 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
     setLines([]); setDiscount(0); setOrigId(""); setReason(""); setViewId(null); setPoViewId(null); setMsg("");
     setPartyId(""); setPartyQ(""); resetCd(); setDueDate(today()); setSavedNo(""); LAST_SAVED_NO = "";
     setTerms("");
+    setReference("");
+    setCashierName(userName);
+    setInvNo("");
+    invNoTouched.current = false;
+    setReceiptOffer(null); setCreditAsk(null);
   };
 
   // Unlock the currently viewed sales invoice for editing.
@@ -588,6 +630,24 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
     navigate(`/app/construction/sahl/sales?view=${viewId}`, { replace: true });
     utils.sales.invoiceGet.invalidate({ id: viewId });
     setMsg(T("وضع العرض — الحفظ معطل", "View mode — saving disabled"));
+  };
+
+  // Typing the invoice number or the PO on a saved invoice unlocks it, so the
+  // value can be corrected without hunting for the "Edit Invoice" button first.
+  const unlockOnEdit = () => {
+    if (isViewing && !editMode && viewId !== null) {
+      setEditMode(true);
+      setMsg(T("وضع التعديل — عدّل ثم اضغط حفظ", "Edit mode — change then press Save"));
+    }
+  };
+  const typeInvNo = (v: string) => {
+    invNoTouched.current = true;
+    setInvNo(v);
+    unlockOnEdit();
+  };
+  const typeRef = (v: string) => {
+    setReference(v);
+    unlockOnEdit();
   };
 
   // Step 1 -> 2: pick item, default qty/price, focus qty.
@@ -634,22 +694,27 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
       }
     }
     let price = defaultPriceFor(p);
-    if (priceListId && kind === "sales") {
-      try {
-        const rows: any = await utils.sahl.priceFor.fetch({ productId: p.id });
-        const hit = (rows ?? []).find((r: any) => String(r.id) === String(priceListId));
-        if (hit && hit.price !== null && Number(hit.price) >= 0) price = Number(hit.price);
-      } catch { /* keep base price */ }
-    }
     const autoDisc = Number(p.fixedDiscount ?? 0);
-    setLines([...lines, {
+    const row = {
       productId: p.id, code: p.sku ?? "", name: p.name || p.nameAr || "", nameAr: p.nameAr || undefined,
       unit: p.unitName ?? "", qty: qn, price, disc: autoDisc > 0 ? autoDisc * qn : 0,
       cost: Number(p.purchasePrice ?? 0),
-      serials: [], tracked: !!p.isSerialTracked,
-    }]);
+      serials: [] as string[], tracked: !!p.isSerialTracked,
+    };
+    // The row appears on the click, not when the price-list lookup returns.
+    setLines([...lines, row]);
     setQ("");
     searchRef.current?.focus();
+    if (priceListId && kind === "sales") {
+      utils.sahl.priceFor.fetch({ productId: p.id })
+        .then((rows: any) => {
+          const hit: any = (rows ?? []).find((r: any) => String(r.id) === String(priceListId));
+          if (hit && hit.price !== null && Number(hit.price) >= 0) {
+            setLines((cur) => cur.map((l) => (l === row ? { ...l, price: Number(hit.price) } : l)));
+          }
+        })
+        .catch(() => { /* keep base price */ });
+    }
   };
 
   // Step 2 -> 3 (Enter in qty) and Step 3 -> add (Enter in price)
@@ -922,7 +987,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         notes: [rCat, rNotes, rRef ? `مرجع: ${rRef}` : "", rSafe].filter(Boolean).join(" — "),
       });
       setMsg(`${T("تم حفظ الفاتورة والسند", "Invoice + receipt saved")}`);
-      setROpen(false); setCreditAsk(null);
+      setROpen(false); setCreditAsk(null); setReceiptOffer(null);
       if (autoPrint) { setQueueNew(true); doPrint(); } else { newDoc(); }
       refreshAll();
     } catch (e: any) {
@@ -932,8 +997,17 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
 
   const finishCreditNo = () => {
     setCreditAsk(null);
-    if (autoPrint) { setQueueNew(true); doPrint(); } else { newDoc(); }
+    setReceiptOffer(null);
     refreshAll();
+  };
+
+  // The cashier explicitly records a part payment against the invoice just saved.
+  const openReceipt = () => {
+    if (!receiptOffer) return;
+    setCreditAsk(receiptOffer);
+    setRAmt(""); setRNotes(""); setRRef(""); setRDate(today());
+    const n2 = new Date();
+    setRTime(`${String(n2.getHours()).padStart(2, "0")}:${String(n2.getMinutes()).padStart(2, "0")}`);
   };
 
   const doPrint = () => setPrintOpen(true);
@@ -945,10 +1019,20 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
     setPrintOpen(false);
     if (queueNew) { setQueueNew(false); newDoc(); refreshAll(); }
   };
-  const [printTpl, setPrintTpl] = useState("");
+  const [printTpl, setPrintTpl] = useState(DEFAULT_DESIGN_KEY);
   const { data: themesQ } = trpc.invoiceTheme.list.useQuery();
-  const myTpls: any[] = (Array.isArray(themesQ) ? themesQ : [])
-    .filter((t: any) => t.config?.kind === "sahl-xlsx");
+  // A locked tenant prints exactly one design, so the other built-ins and any
+  // uploaded template are dropped from the picker and forced on export.
+  const lockedTpl = lockedDesignKey((company as any)?.tenantId);
+  useEffect(() => { if (lockedTpl) setPrintTpl(lockedTpl); }, [lockedTpl]);
+  const myTpls: any[] = [
+    ...designsForTenant((company as any)?.tenantId).map((dz) => ({
+      id: `design:${dz.key}`, themeKey: dz.key, designKey: dz.key,
+      name: dz.name, nameAr: dz.nameAr, hasTemplate: false, builtin: true, config: null,
+    })),
+    ...(lockedTpl ? [] : (Array.isArray(themesQ) ? themesQ : [])
+      .filter((t: any) => t.config?.kind === "sahl-xlsx" && !designsForTenant((company as any)?.tenantId).some((dz) => dz.key === t.themeKey))),
+  ];
 
   const docTypeFor = (): "sale" | "quotation" | "purchase" | "sales-return" =>
     kind === "sales" ? "sale" : kind === "quotation" ? "quotation"
@@ -962,7 +1046,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
     if (kind === "purchase")
       return { docNo: "PO No.", party: "Supplier", payment: "Payment Terms", dueDate: "Delivery Date", cashier: "Buyer", banner: "Purchase Order" };
     if (kind === "sales-return")
-      return { docNo: "Return No.", party: "Client", payment: "Refund Mode", dueDate: "Original Invoice", cashier: "Cashier", banner: "Sales Return" };
+      return { docNo: "Return No.", party: "Client", payment: "Refund Mode", dueDate: "Original Invoice", cashier: "Owner Name", banner: "Sales Return" };
     return undefined;
   };
 
@@ -1016,6 +1100,9 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         companyTax: comp.taxNumber ?? undefined,
         companyContacts: contacts.length ? contacts : undefined,
         accountAddress: pairJoin(addrEn, addrAr) || undefined,
+        accountAddressEn: addrEn || undefined,
+        accountAddressAr: addrAr || undefined,
+        po: String(inv?.poNumber ?? "").trim() || undefined,
         docType: docTypeFor(),
         invoiceType: String(inv?.invoiceType ?? "") === "standard" ? "simple" : "zatca",
       };
@@ -1051,7 +1138,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         qrText: undefined,
         dueDate: orig?.invoiceNumber ?? undefined,
         dueDateText: orig?.invoiceNumber ?? undefined,
-        cashier: cnCashier || userName || undefined,
+        cashier: cnCashier || cashier || undefined,
         paymentType: orig?.paymentMethod ?? undefined,
         taxPct: 15,
         qtyTotal: items.reduce((a: number, it: any) => a + Number(it.quantity || 0), 0),
@@ -1060,6 +1147,8 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         companyTax: comp.taxNumber ?? undefined,
         companyContacts: contacts.length ? contacts : undefined,
         accountAddress: pairJoin(cust?.address, cust?.addressAr) || undefined,
+        accountAddressEn: String(cust?.address ?? "").trim() || undefined,
+        accountAddressAr: String(cust?.addressAr ?? "").trim() || undefined,
       };
     }
     if (isViewing && quoteViewData && kind === "quotation") {
@@ -1100,6 +1189,8 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         companyTax: comp.taxNumber ?? undefined,
         companyContacts: contacts.length ? contacts : undefined,
         accountAddress: pairJoin(c?.address, c?.addressAr) || undefined,
+        accountAddressEn: String(c?.address ?? "").trim() || undefined,
+        accountAddressAr: String(c?.addressAr ?? "").trim() || undefined,
       };
     }
     if (isViewing && poViewData && kind === "purchase") {
@@ -1137,6 +1228,8 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         companyTax: comp.taxNumber ?? undefined,
         companyContacts: contacts.length ? contacts : undefined,
         accountAddress: pairJoin(s?.address, s?.addressAr) || undefined,
+        accountAddressEn: String(s?.address ?? "").trim() || undefined,
+        accountAddressAr: String(s?.addressAr ?? "").trim() || undefined,
       };
     }
     const prem = parties.find((a: any) => String(a.id) === String(partyId));
@@ -1144,7 +1237,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
     const nameAr = String(cd.nameAr || prem?.nameAr || "").trim();
     const liveParty = nameEn || nameAr;
     return {
-      no: savedNo || LAST_SAVED_NO || `INV-${Date.now()}`, date: docDate,
+      no: (kind === "sales" ? invNo.trim() : "") || savedNo || LAST_SAVED_NO || nextInvNo, date: docDate,
       time: `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`,
       party: liveParty,
       partyAr: nameAr && nameAr !== liveParty ? nameAr : undefined,
@@ -1157,7 +1250,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
       notes: reason || undefined, qrText: undefined,
       dueDate: (kind === "sales-return" && origDoc ? String(origDoc.invoiceNumber ?? "") : dueDate) || undefined,
       dueDateText: kind === "sales-return" && origDoc ? String(origDoc.invoiceNumber ?? "") : undefined,
-      cashier: cnCashier || userName || undefined,
+      cashier: cnCashier || cashier || undefined,
       paymentType: payLabel, taxPct: Number(taxPct),
       labels: docLabels(),
       terms: terms.trim() || undefined,
@@ -1167,7 +1260,12 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
       balBefore, balAfter, hasAccount: !!partyId,
       companyTax: comp.taxNumber ?? undefined,
       companyContacts: contacts.length ? contacts : undefined,
-      accountAddress: pairJoin(cd.address, cd.addressAr) || undefined,
+      // Typed details win; a picked customer's stored address/VAT/CR fill the
+      // blanks so the printed client block is never empty.
+      accountAddress: pairJoin(cd.address || prem?.address, cd.addressAr || prem?.addressAr) || undefined,
+      accountAddressEn: String(cd.address ?? "").trim() || String(prem?.address ?? "").trim() || undefined,
+      accountAddressAr: String(cd.addressAr ?? "").trim() || String(prem?.addressAr ?? "").trim() || undefined,
+      po: reference.trim() || undefined,
       docType: docTypeFor(),
     };
   };
@@ -1178,97 +1276,124 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
     return null;
   };
 
-  const printDoc = async (mode: "html" | "xlsx" | "both") => {
+  const companyForPrint = () => printCompany(company);
+
+  const baseCfg = (): PrintConfig => ({
+    kind: "sahl-xlsx", docType: docTypeFor(), paper: "A4",
+    titleAr: DOC_TITLES[docTypeFor()][0], titleEn: DOC_TITLES[docTypeFor()][1],
+    headerLines: ["", "", ""], contactLines: [],
+    showSignatures: true, showTax: true, showBalances: true,
+    columns: [
+      { key: "code", ar: "الكود", en: "Code", visible: true },
+      { key: "name", ar: "الصنف", en: "Item", visible: true },
+      { key: "unit", ar: "الوحدة", en: "Unit", visible: true },
+      { key: "qty", ar: "الكمية", en: "Qty", visible: true },
+      { key: "price", ar: "السعر", en: "Price", visible: true },
+      { key: "total", ar: "الإجمالي", en: "Total", visible: true },
+    ],
+    footerText: "", accent: "#2fae4e",
+  });
+
+  // Build the workbook for the selected design (built-in reference design or
+  // the tenant's own uploaded template).
+  const renderSelectedXlsx = async (d: DocData, cfg: PrintConfig): Promise<{ blob: Blob; name: string } | null> => {
+    const wanted = lockedTpl || printTpl;
+    const tplRow = myTpls.find((x: any) => String(x.id) === String(wanted) || x.themeKey === wanted);
+    const design = designByKey(tplRow?.designKey ?? (tplRow?.builtin ? tplRow?.themeKey : ""));
+    if (design) {
+      const blob = await renderTemplateXlsx(design.b64, cfg, d, companyForPrint());
+      return { blob, name: `${d.no}-${design.key}.xlsx` };
+    }
+    if (tplRow && tplRow.hasTemplate && tplRow.id) {
+      const tpl = await utils.invoiceTheme.getTemplate.fetch({ id: Number(tplRow.id) });
+      if (tpl?.templateData) {
+        const blob = await renderTemplateXlsx(tpl.templateData, cfg, d, companyForPrint());
+        return { blob, name: `${d.no}-${(tplRow.name || "invoice").replace(/[^\w\u0600-\u06FF-]+/g, "-")}.xlsx` };
+      }
+    }
+    return null;
+  };
+
+  const printDoc = async (mode: "html" | "xlsx" | "pdf") => {
+    // Open the PDF tab on the click itself (popup blockers reject a window
+    // opened after the async render) and fill it when the file is ready.
+    const pdfWin = mode === "pdf" ? window.open("about:blank", "_blank") : null;
+    if (pdfWin) {
+      try {
+        pdfWin.document.open();
+        pdfWin.document.write('<!doctype html><html dir="rtl"><meta charset="utf-8"><title>PDF</title><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;font:15px/1.7 system-ui,sans-serif;color:#555;background:#fafafa">جارٍ تجهيز PDF…<br>Preparing PDF…</body></html>');
+        pdfWin.document.close();
+      } catch { /* ignore */ }
+    }
     const d = buildDoc();
     const comp: any = company ?? {};
     const cfg = tplConfig();
     const [tar, ten] = DOC_TITLES[docTypeFor()];
+    // Reference-workbook extras
+    d.period = d.period || (() => {
+      const dt = new Date(String(d.date || "").slice(0, 10) + "T00:00:00");
+      if (isNaN(dt.getTime())) return undefined;
+      const M = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+      return `${dt.getFullYear()} -${M[dt.getMonth()]}`;
+    })();
+    d.po = d.po || reference.trim() || undefined;
     // ZATCA QR: keep the stored code when viewing a saved invoice, else build
-    // the TLV so the 0060 QR slot always carries a real e-invoice QR.
+    // the TLV so the QR slot always carries a real e-invoice QR.
     if (!d.qrText && comp.taxNumber && d.invoiceType !== "simple") {
       try {
         d.qrText = zatcaQrTlv({
           seller: comp.companyNameAr || comp.companyName || "",
           vat: comp.taxNumber,
-          timestamp: `${d.date}T${d.time || "00:00"}:00`,
+          timestamp: zatcaTimestamp(d.date, d.time),
           total: d.net, tax: d.tax,
         });
       } catch { /* qr optional */ }
     }
-    if (mode === "html" || mode === "both")
+    if (mode === "html")
       await printInvoice060(
         d,
         {
           nameAr: comp.companyNameAr, name: comp.companyName, tax: comp.taxNumber,
           taxNumber: comp.taxNumber, crNumber: comp.crNumber ?? comp.commercialRegistration,
           logoBase64: comp.logo || undefined,
+          address: comp.address || undefined, addressAr: comp.addressAr || undefined,
         },
-        cfg?.titleAr ?? tar,
+        cfg?.titleEn || ten,
       );
-    if (mode === "xlsx" || mode === "both") {
-      const compInfo = { nameAr: comp.companyNameAr, name: comp.companyName };
-      // The tenant's own uploaded Excel design wins: the invoice is written
-      // into THAT file (tags replaced, item row repeated per line).
-      const tplRow = myTpls.find((x: any) => String(x.id) === String(printTpl) || x.themeKey === printTpl);
-      if (tplRow && tplRow.hasTemplate && tplRow.id && cfg) {
-        try {
-          const tpl = await utils.invoiceTheme.getTemplate.fetch({ id: Number(tplRow.id) });
-          if (tpl?.templateData) {
-            const blob = await renderTemplateXlsx(tpl.templateData, cfg, d, {
-              ...compInfo, tax: comp.taxNumber,
-              logoBase64: comp.logo || undefined,
-            });
-            downloadBlob(blob, `${d.no}-${(tplRow.name || "invoice").replace(/[^\w؀-ۿ-]+/g, "-")}.xlsx`);
-            if (mode === "both") { /* the HTML copy was already sent to the printer */ }
-            closePrint();
-            return;
+
+    if (mode === "xlsx" || mode === "pdf") {
+      try {
+        const out = await renderSelectedXlsx(d, { ...baseCfg(), ...(cfg ?? {}) } as PrintConfig);
+        if (!out) {
+          // No design selected at all: keep the original 0060 replica.
+          const blob = await render060(baseCfg(), d, {
+            nameAr: comp.companyNameAr, name: comp.companyName, tax: comp.taxNumber,
+            logoBase64: comp.logo || undefined,
+          } as any);
+          if (mode === "pdf") throw new Error(T("لا يوجد قالب للطباعة", "No template selected"));
+          downloadBlob(blob, `${d.no}-0060.xlsx`);
+        } else if (mode === "xlsx") {
+          downloadBlob(out.blob, out.name);
+        } else {
+          // Excel -> PDF on the server (LibreOffice) so print == the workbook.
+          const fd = new FormData();
+          fd.append("file", out.blob, out.name);
+          const res = await fetch("/api/sahl/xlsx-pdf", { method: "POST", body: fd });
+          if (!res.ok) throw new Error((await res.text()) || `PDF ${res.status}`);
+          const pdf = await res.blob();
+          const url = URL.createObjectURL(pdf);
+          if (pdfWin && !pdfWin.closed) pdfWin.location.replace(url);
+          else {
+            const w = window.open(url, "_blank");
+            if (!w) downloadBlob(pdf, out.name.replace(/\.xlsx$/i, ".pdf"));
           }
-        } catch (e: any) {
-          setMsg(String(e?.message ?? e));
         }
-      }
-      if (!cfg) {
-        // DEFAULT: form-returnsale-0060 replica (the user's Excel file)
-        const cfg060: PrintConfig = {
-          kind: "sahl-xlsx", docType: docTypeFor(), paper: "A4",
-          titleAr: kind === "sales-return" ? "مرتجع بيع" : tar,
-          titleEn: kind === "sales-return" ? "Sales return" : ten,
-          headerLines: ["", "", ""], contactLines: [],
-          showSignatures: true, showTax: true, showBalances: true,
-          columns: [
-            { key: "code", ar: "الكود", en: "Code", visible: true },
-            { key: "name", ar: "الصنف", en: "Item", visible: true },
-            { key: "unit", ar: "الوحدة", en: "Unit", visible: true },
-            { key: "qty", ar: "الكمية", en: "Qty", visible: true },
-            { key: "price", ar: "السعر", en: "Price", visible: true },
-            { key: "total", ar: "الإجمالي", en: "Total", visible: true },
-          ],
-          footerText: "", accent: "#2fae4e",
-        };
-        const blob = await render060(cfg060, d, {
-          ...compInfo, tax: comp.taxNumber,
-          logoBase64: comp.logo || undefined,
-        });
-        downloadBlob(blob, `${d.no}-0060.xlsx`);
-      } else {
-        const mkCfg = (paper: "A4" | "thermal80", narrow: boolean): PrintConfig => {
-          const base: PrintConfig = cfg;
-          if (!narrow) return { ...base, paper };
-          return {
-            ...base, paper,
-            showSignatures: false,
-            columns: base.columns.map((c) => ({
-              ...c, visible: ["name", "qty", "price", "total"].includes(c.key),
-            })),
-          };
-        };
-        const full = mkCfg("A4", false);
-        const blob = await renderXlsx(full, d, compInfo);
-        downloadBlob(blob, `${d.no}.xlsx`);
-        if (mode === "both") {
-          const therm = await renderXlsx(mkCfg("thermal80", true), d, compInfo);
-          downloadBlob(therm, `${d.no}-thermal.xlsx`);
-        }
+      } catch (e: any) {
+        setMsg(String(e?.message ?? e));
+        try {
+          if (pdfWin && !pdfWin.closed)
+            pdfWin.document.body.innerHTML = '<div style="padding:24px;font:15px system-ui;color:#a00">PDF failed / تعذر إنشاء الـ PDF</div>';
+        } catch { /* ignore */ }
       }
     }
     closePrint();
@@ -1328,10 +1453,21 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         return;
       }
     }
+    // A typed number is used verbatim; the tenant index rejects duplicates, so
+    // warn here instead of failing mid-save.
+    const typedNo = kind === "sales" ? invNo.trim() : "";
+    if (typedNo && (history as any[]).some((h: any) =>
+      String(h.invoiceNumber ?? "") === typedNo && String(h.id) !== String(viewId ?? ""))) {
+      setMsg(T("رقم الفاتورة مستخدم بالفعل — اختر رقمًا آخر", "Invoice number already used — pick another"));
+      return;
+    }
     setSaving(true);
+    setMsg(T("جارٍ الحفظ…", "Saving…"));
     try {
       const stamp = Date.now();
-      const note = [reason || undefined, reference.trim() ? `${T("مرجع", "Ref")}: ${reference.trim()}` : undefined, salesmanSuffix()].filter(Boolean).join(" — ") || undefined;
+      // The PO has its own field and its own printed line, so it is no longer
+      // duplicated into the note text.
+      const note = [reason || undefined, salesmanSuffix()].filter(Boolean).join(" — ") || undefined;
       if (kind === "sales") {
         const custName = cd.name.trim() || parties.find((a: any) => String(a.id) === String(partyId))?.name;
         const nowT = new Date();
@@ -1342,7 +1478,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         // Editing a saved invoice: update the same row + items (never create
         // a duplicate). Backend adjusts stock by the quantity delta.
         if (isViewing && editMode && viewId !== null) {
-          const savedNo = String((viewData as any)?.invoice?.invoiceNumber ?? `INV-${stamp}`);
+          const savedNo = invNo.trim() || String((viewData as any)?.invoice?.invoiceNumber ?? nextInvNo);
           await invUpdate.mutateAsync({
             id: viewId,
             invoiceNumber: savedNo,
@@ -1351,12 +1487,13 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
             date: docDate,
             dueDate: dueDate || undefined,
             time: `${String(nowT.getHours()).padStart(2, "0")}:${String(nowT.getMinutes()).padStart(2, "0")}`,
-            cashier: userName || undefined,
+            cashier: cashier || undefined,
             subTotal: String(subtotal), discountAmount: String(discount),
             taxPercent: String(taxPct), taxAmount: taxAmt.toFixed(2),
             totalAmount: String(grand), notes: note,
             paymentType: payMode === "card" ? "card" : payMode === "credit" ? "credit" : "cash",
             warehouseId: wh ? Number(wh) : undefined,
+            poNumber: reference.trim() || undefined,
             customerName: custName || undefined,
             customerNameAr: cd.nameAr.trim() || undefined,
             customerPhone: cd.phone.trim() || undefined,
@@ -1381,19 +1518,21 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
           ]);
           return;
         }
+        const useNo = invNo.trim() || nextInvNo;
         const inv = await invCreate.mutateAsync({
-          invoiceNumber: `INV-${stamp}`,
+          invoiceNumber: useNo,
           invoiceType: invType === "simple" ? "standard" : "zatca",
           ...(partyId ? { customerId: Number(partyId) } : {}),
           date: docDate,
           dueDate: dueDate || undefined,
           time: `${String(nowT.getHours()).padStart(2, "0")}:${String(nowT.getMinutes()).padStart(2, "0")}`,
-          cashier: userName || undefined,
+          cashier: cashier || undefined,
           subTotal: String(subtotal), discountAmount: String(discount),
           taxPercent: String(taxPct), taxAmount: taxAmt.toFixed(2),
           totalAmount: String(grand), notes: note,
           paymentType: payMode === "card" ? "card" : payMode === "credit" ? "credit" : "cash",
           ...(wh ? { warehouseId: Number(wh) } : {}),
+          poNumber: reference.trim() || undefined,
           customerName: custName || undefined,
           customerNameAr: cd.nameAr.trim() || undefined,
           customerPhone: cd.phone.trim() || undefined,
@@ -1404,9 +1543,10 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
           customerCr: cd.cr.trim() || undefined,
           items: salesItems,
         });
-        setMsg(`${T("تم حفظ الفاتورة", "Invoice saved")} — INV-${stamp}`);
-        setSavedNo(`INV-${stamp}`);
-        LAST_SAVED_NO = `INV-${stamp}`;
+        setMsg(`${T("تم حفظ الفاتورة", "Invoice saved")} — ${useNo}`);
+        setSavedNo(useNo);
+        LAST_SAVED_NO = useNo;
+        setInvNo(useNo);
         // Issue serials for tracked lines
         try {
           for (const l of lines.filter((x) => x.tracked && (x.serials ?? []).length)) {
@@ -1418,14 +1558,10 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
         } catch (e: any) {
           setMsg(`${T("حُفظت الفاتورة وفشل السيريال", "Invoice saved, serials failed")}: ${e.message ?? e}`);
         }
-        // Credit invoice down-payment prompt (هل دفع العميل دفعة؟) — coral modal
-        if (payMode === "credit" && partyId) {
-          setCreditAsk({ id: (inv as any)?.id, total: grand });
-          setRAmt(""); setRNotes(""); setRRef(""); setRDate(today());
-          const n2 = new Date();
-          setRTime(`${String(n2.getHours()).padStart(2, "0")}:${String(n2.getMinutes()).padStart(2, "0")}`);
-          return;
-        }
+        // Credit invoice: the part-payment receipt stays one click away, but it
+        // must never interrupt saving with a popup (the print was lost behind it).
+        setReceiptOffer(payMode === "credit" && partyId && (inv as any)?.id
+          ? { id: Number((inv as any).id), total: grand } : null);
       } else if (kind === "quotation") {
         await quoteCreate.mutateAsync({
           quotationNumber: `Q-${stamp}`, customerId: Number(partyId), date: docDate,
@@ -1569,7 +1705,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
   });
 
   return (
-    <div dir="ltr" className={`flex min-h-full text-black ${touch ? "text-[15px]" : "text-[12px]"}`}>
+    <div dir="ltr" className={`sahl-pos flex min-h-full text-black ${touch ? "text-[15px]" : "text-[12px]"}`}>
       <div className="flex min-w-0 flex-1 flex-col bg-white">
         {/* ===== Zone 2: header — left summary green/yellow boxes + center entry form ===== */}
         <div className="flex items-start gap-2 border-b border-[#bbb] bg-[#f4f4f4] p-1.5" dir="ltr">
@@ -1577,13 +1713,21 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
           <div className="flex w-[150px] shrink-0 flex-col">
             <div className="border border-[#1d7a37] p-1 text-center" style={{ background: "#2fae4e" }}>
               <div className="text-[10px] text-white/90">#</div>
-              <div className="font-mono text-[22px] font-bold leading-tight text-white tabular-nums"
-                title={isViewing ? T("فاتورة معروضة", "Viewing") : T("رقم الفاتورة الجديد", "New invoice number")}>
-                {isViewing && viewData ? (String((viewData as any)?.invoice?.invoiceNumber ?? "").replace(/^\D+/, "") || String(viewId))
-                  : isViewing && cnViewData ? (String((cnViewData as any)?.creditNote?.creditNoteNumber ?? "").replace(/^\D+/, "") || String(viewId))
-                  : isViewing && quoteViewData ? (String((quoteViewData as any)?.quotationNumber ?? "").replace(/^\D+/, "") || String(viewId))
-                  : history.length + 1}
-              </div>
+              {kind === "sales" ? (
+                <input value={invNo}
+                  onChange={(e) => { typeInvNo(e.target.value); }}
+                  placeholder={nextInvNo}
+                  title={T("رقم الفاتورة — اكتبه بنفسك قبل الحفظ", "Invoice number — type it yourself before saving")}
+                  className="w-full min-w-0 border-b border-white/50 bg-transparent text-center font-mono text-[18px] font-bold leading-tight text-white tabular-nums outline-none placeholder:text-white/60" />
+              ) : (
+                <div className="font-mono text-[22px] font-bold leading-tight text-white tabular-nums"
+                  title={isViewing ? T("فاتورة معروضة", "Viewing") : T("رقم الفاتورة الجديد", "New invoice number")}>
+                  {isViewing && viewData ? (String((viewData as any)?.invoice?.invoiceNumber ?? "").replace(/^\D+/, "") || String(viewId))
+                    : isViewing && cnViewData ? (String((cnViewData as any)?.creditNote?.creditNoteNumber ?? "").replace(/^\D+/, "") || String(viewId))
+                    : isViewing && quoteViewData ? (String((quoteViewData as any)?.quotationNumber ?? "").replace(/^\D+/, "") || String(viewId))
+                    : history.length + 1}
+                </div>
+              )}
               <div className="text-[11px] text-white/95"><input type="date" value={docDate} onChange={(e) => setDocDate(e.target.value)} disabled={readOnly}
                 className="w-full bg-transparent text-[10px] font-bold text-white outline-none [color-scheme:dark]" /></div>
               {(kind === "sales" || kind === "quotation") && (
@@ -1680,20 +1824,17 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
               <button className="border border-[#2f7a3d] bg-[#2fae4e] px-2 py-1 text-[12px] font-bold text-white" title={isSales ? T("عميل جديد", "New customer") : T("مورد جديد", "New supplier")} onClick={() => setCOpen(true)}>
                 ＋
               </button>
-              <label className="flex cursor-pointer items-center gap-0.5 text-[12px]" title={T("نقدي", "Cash")}>
-                <input type="checkbox" checked={payMode === "cash"} onChange={() => setPayMode("cash")} disabled={readOnly} />
-                {T("نقدي", "Cash")}
-              </label>
-              <label className="flex cursor-pointer items-center gap-0.5 text-[12px]" title={T("آجل", "Credit/Deferred")}>
-                <input type="checkbox" checked={payMode === "credit"} onChange={() => setPayMode("credit")} disabled={readOnly} />
-                {payMode === "credit" ? T("آجل", "Deferred") : T("آجل", "Credit")}
-              </label>
-              {kind === "sales" && (
-                <label className="flex cursor-pointer items-center gap-0.5 text-[12px]" title={T("شبكة", "Card")}>
-                  <input type="checkbox" checked={payMode === "card"} onChange={() => setPayMode("card")} disabled={readOnly} />
-                  {T("شبكة", "Card")}
+              {PAY_MODES.filter((m) => kind === "sales" || m.k !== "card").map((m) => (
+                <label key={m.k}
+                  className={`flex cursor-pointer items-center gap-1 border px-1.5 py-0.5 text-[12px] ${payMode === m.k ? "border-[#0a5c2a] bg-[#e3f6e8] font-bold" : "border-[#bbb] bg-white"}`}
+                  title={m.k === "credit" ? T("آجل — على الحساب", "Credit / deferred on account")
+                    : m.k === "card" ? T("شبكة — دفع بالبطاقة", "Card — electronic payment")
+                    : T("نقدي", "Cash")}>
+                  <input type="radio" name="sahl-pay-mode" className="accent-[#0a5c2a]"
+                    checked={payMode === m.k} onChange={() => setPayMode(m.k)} disabled={readOnly} />
+                  {T(m.ar, m.en)}
                 </label>
-              )}
+              ))}
               {kind === "sales" && (
                 <label className="flex items-center gap-1">
                   <b className="text-[11px]">{T("نوع الفاتورة", "Invoice type")}</b>
@@ -1742,8 +1883,9 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
                 </button>
               )}
               <label className="ms-auto flex items-center gap-1">
-                <b className="text-[11px]">{T("المرجع", "Reference")}</b>
-                <input value={reference} onChange={(e) => setReference(e.target.value)} disabled={readOnly}
+                <b className="text-[11px]">{T("رقم PO", "PO No")}</b>
+                <input value={reference} onChange={(e) => typeRef(e.target.value)}
+                  title={T("یہ نمبر انوائس پر PO لائن میں پرنٹ ہوتا ہے اور ساتھ محفوظ رہتا ہے", "Printed on the invoice PO line and saved with it")}
                   className={`${inputCls} h-8 w-[110px]`} />
               </label>
             </div>
@@ -2021,6 +2163,23 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
               </select>
             </label>
           )}
+          {kind === "sales" && (
+            <label className="flex items-center gap-1 text-[11px]">
+              <span className="opacity-90">{T("رقم الفاتورة", "Invoice No")}</span>
+              <input value={invNo} onChange={(e) => { typeInvNo(e.target.value); }}
+                placeholder={nextInvNo}
+                className="h-7 w-[110px] border border-[#bbb] bg-white px-1 text-black"
+                title={T("یہی نمبر انوائس پر ڈاک نمبر کے طور پر پرنٹ ہوگا", "Printed on the invoice as the doc number")} />
+            </label>
+          )}
+          {kind === "sales" && (
+            <label className="flex items-center gap-1 text-[11px]">
+              <span className="opacity-90">{T("الكاشير", "Cashier")}</span>
+              <input value={cashierName} onChange={(e) => setCashierName(e.target.value)} disabled={readOnly}
+                className="h-7 w-[130px] border border-[#bbb] bg-white px-1 text-black"
+                title={T("اسم الكاشير المطبوع على الفاتورة", "Cashier name printed on the invoice")} />
+            </label>
+          )}
           {(kind === "sales" || kind === "purchase") && (
             <label className="flex items-center gap-1 text-[11px]">
               <span className="opacity-90">{T("ضريبة %", "Tax %")}</span>
@@ -2055,10 +2214,20 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
             👆 <b>{T("قائمة اللمس", "Touch List")}</b>
           </button>
           <span className="mx-1 h-5 w-px bg-[#555]" />
-          <button className="flex items-center gap-1 border border-[#0a5c2a] px-2 py-1 font-bold hover:brightness-110"
-            style={{ background: "#2fae4e" }} disabled={saving || readOnly} onClick={() => save(false, false)}>
-            ✓ <b>{T("حفظ F9", "Save F9")}</b>
+          <button className="flex items-center gap-1 border border-[#0a5c2a] px-2 py-1 font-bold hover:brightness-110 disabled:opacity-60"
+            style={{ background: saving ? "#1d7a37" : "#2fae4e" }} disabled={saving || readOnly} onClick={() => save(false, false)}>
+            {saving
+              ? <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden />
+              : <span>✓</span>}
+            <b>{saving ? T("جارٍ الحفظ…", "Saving…") : T("حفظ F9", "Save F9")}</b>
           </button>
+          {receiptOffer && (
+            <button className="border border-[#8a2f27] bg-[#f26c63] px-2 py-1 text-[12px] font-bold text-white hover:brightness-110"
+              onClick={openReceipt}
+              title={T("سند قبض بجزء من مبلغ الفاتورة", "Receipt for part of the invoice amount")}>
+              🧾 <b>{T("دفعة", "Payment")}</b>
+            </button>
+          )}
           {isViewing && kind === "sales" && !editMode && (
             <button className="border border-[#8a6d00] bg-[#f7c631] px-2 py-1 font-bold text-black hover:brightness-105" onClick={startEdit}>
               ✎ <b>{T("تعديل الفاتورة", "Edit Invoice")}</b>
@@ -2110,10 +2279,14 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
           <button className="flex-1 border border-[#888] bg-white py-0.5" title={T("الأخير", "Last")}
             onClick={() => (kind === "sales" || kind === "purchase") && history.length && loadView(history.length - 1)}>⏭</button>
         </div>
-        <button className="flex flex-col items-center border-2 border-[#0d47a1] bg-[#1e88e5] py-2 text-white hover:brightness-110"
-          onClick={() => save(true, true)} title={T("حفظ | طباعة | جديد (F12)", "Save | print | new (F12)")}>
-          <span className="text-[26px] leading-none">☑</span>
-          <span className="mt-1 text-[10px] font-bold">{T("حفظ | طباعة | جديد", "Save | Print | New")}</span>
+        <button className="flex flex-col items-center border-2 border-[#0d47a1] py-2 text-white hover:brightness-110 disabled:opacity-60"
+          style={{ background: saving ? "#0d47a1" : "#1e88e5" }}
+          disabled={saving || readOnly} onClick={() => save(true, true)}
+          title={T("حفظ | طباعة | جديد (F12)", "Save | print | new (F12)")}>
+          {saving
+            ? <span className="mt-1 inline-block h-5 w-5 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden />
+            : <span className="text-[26px] leading-none">☑</span>}
+          <span className="mt-1 text-[10px] font-bold">{saving ? T("جارٍ الحفظ…", "Saving…") : T("حفظ | طباعة | جديد", "Save | Print | New")}</span>
           <span className="text-[10px] font-bold">F12</span>
         </button>
         <label className="flex items-center justify-center gap-1 text-[11px]">
@@ -2125,7 +2298,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
           <FuncKey k="F6" label={T("تعديل السعر", "Edit Price")} onClick={editPrice} color="#455a64" />
           <FuncKey k="F8" label={T("حذف الصنف", "Delete Item")} onClick={delLine} color="#6a1b9a" />
           <FuncKey k="F7" label={T("خيارات أخرى", "Other Options")} onClick={moreOpts} color="#00838f" />
-          <FuncKey k="F9" label={T("حفظ", "Save")} onClick={() => save(false, false)} color="#2fae4e" />
+          <FuncKey k="F9" label={saving ? T("جارٍ الحفظ", "Saving") : T("حفظ", "Save")} onClick={() => save(false, false)} color="#2fae4e" disabled={saving || readOnly} />
           <FuncKey k="F10" label={T("جديد", "New")} onClick={newDoc} color="#546e7a" />
           <FuncKey k="F11" label={T("سداد", "Settle")} onClick={() => { setTendered(""); setSettleOpen(true); }} color="#1565c0" />
         </div>
@@ -2134,25 +2307,34 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
       {printOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={closePrint}>
           <div className="w-full max-w-sm border border-black bg-white p-3" onClick={(e) => e.stopPropagation()}>
-            <b className="text-[13px]">{T("الطباعة — اختر القالب", "Print — pick template")}</b>
-            <select className={`${inputCls} mt-2`} value={printTpl} onChange={(e) => setPrintTpl(e.target.value)}>
-              <option value="">{T("الافتراضي", "Default")}</option>
-              {myTpls.map((t: any) => <option key={t.id ?? t.themeKey} value={t.id ?? t.themeKey}>{t.hasTemplate ? "📄 " : ""}{t.name}</option>)}
-            </select>
+            <b className="text-[13px]">{T("الطباعة — اختر التصميم", "Print — choose design")}</b>
+            {lockedTpl ? (
+              <div className={`${inputCls} mt-2 flex items-center gap-1 bg-[#f2f7f3]`}>
+                <span className="text-[11px] text-[#666]">{T("التصميم المعتمد", "Locked design")}</span>
+                <b className="text-[12px]">{language === "ar" ? designByKey(lockedTpl)?.nameAr : designByKey(lockedTpl)?.name}</b>
+              </div>
+            ) : (
+              <select className={`${inputCls} mt-2`} value={printTpl} onChange={(e) => setPrintTpl(e.target.value)}>
+                {myTpls.map((t: any) => (
+                  <option key={t.id ?? t.themeKey} value={t.id ?? t.themeKey}>
+                    {t.hasTemplate ? "📄 " : ""}{language === "ar" ? (t.nameAr || t.name) : (t.name || t.nameAr)}
+                  </option>
+                ))}
+              </select>
+            )}
             <div className="mt-1 text-[11px]">
               <button className={btnCls} onClick={() => navigate("/app/construction/sahl/prints")}>
                 {T("مصمم القوالب", "Template designer")}
               </button>
             </div>
             <div className="mt-2 flex justify-between gap-1">
-              <button className={btnCls} onClick={() => printDoc("html")}>🖨 HTML</button>
-              <button className={btnCls} onClick={() => printDoc("xlsx")}>xlsx ↓</button>
-              <button className={btnGreenCls} style={{ background: "#0a5c2a" }} onClick={() => printDoc("both")}>
-                {T("الاثنان (A4 + حراري)", "Both")}
+              <button className={btnGreenCls} style={{ background: "#0a5c2a" }} onClick={() => printDoc("pdf")}>
+                {T("طباعة (PDF)", "Print (PDF)")}
               </button>
+              <button className={btnCls} onClick={() => printDoc("xlsx")}>Excel ↓</button>
             </div>
             <div className="mt-1 text-[11px] text-[#666]">
-              {T("الاثنان: A4 مفصلة + إيصال حراري", "Both: detailed A4 + thermal receipt")}
+              {T("يطبع نفس ملف الإكسل (صفحة A4 واحدة)", "Prints exactly the Excel file (one A4 page)")}
             </div>
           </div>
         </div>
@@ -2527,7 +2709,7 @@ export default function SahlTxn({ kind }: { kind: TxnKind }) {
                 <span className="mt-1 text-[14px] font-bold">2</span>
               </button>
               <button className="flex w-[150px] flex-col items-center border border-[#c9c9c9] bg-white py-3 hover:bg-[#fff3f2]"
-                onClick={() => { setCreditAsk(null); setMsg(T("تراجع — الفاتورة محفوظة بدون دفعة", "Undo — invoice saved without payment")); refreshAll(); }}>
+                onClick={() => { setCreditAsk(null); setReceiptOffer(null); setMsg(T("تم الإغلاق — الفاتورة محفوظة بدون دفعة", "Closed — invoice saved without payment")); refreshAll(); }}>
                 <span className="flex items-center gap-2 text-[16px] font-bold text-[#c62828]">
                   Undo <span>↺</span>
                 </span>

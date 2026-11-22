@@ -1,0 +1,136 @@
+name: Windows Desktop Build
+
+# Builds the standalone YASCO ERP for Windows from THIS repository (no manual
+# build on the VPS or locally). The installer embeds the entire front-end
+# (`dist/public`) plus the offline Node sidecar, so:
+#   * the UI opens instantly and keeps working even if the website is down,
+#   * the app starts at /login (never the marketing landing page),
+#   * `/api/*` calls are reverse-proxied to the live backend (full parity and
+#     the exact same per-module routing/isolation as the website), and
+#   * when there is no network the bundled SQLite backend answers and the
+#     changes sync up automatically once the connection returns.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [zatca-phase2, new3, main, master]
+    paths:
+      - "src/**"
+      - "api/**"
+      - "desktop/**"
+      - "src-tauri/**"
+      - "public/**"
+      - "index.html"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.*"
+      - "tsconfig*.json"
+      - ".github/workflows/windows.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps --no-audit --no-fund
+
+      - name: Stage Node sidecar (offline backend runtime)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
+          Copy-Item (Get-Command node).Source src-tauri/binaries/node-x86_64-pc-windows-msvc.exe -Force
+
+      - name: Build front-end + sidecar + Tauri app
+        # `tauri build` runs beforeBuildCommand = `npm run build && npm run build:desktop`.
+        run: npx tauri build --bundles nsis
+        env:
+          NODE_ENV: production
+          NODE_OPTIONS: "--max-old-space-size=4096"
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Verify bundled output
+        shell: bash
+        run: |
+          set -e
+          test -f dist/public/index.html
+          test -f dist/desktop-boot.js
+          ls -la dist/public/index.html dist/desktop-boot.js
+          ls -la src-tauri/target/release/bundle/nsis/*.exe
+
+      - name: Upload installer as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yasco-erp-windows
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-build-${{ github.run_number }}
+          name: YASCO ERP Windows — build ${{ github.run_number }}
+          files: src-tauri/target/release/bundle/nsis/*.exe
+          body: |
+            Standalone YASCO ERP for Windows (v${{ github.run_number }}).
+
+            - Front-end bundled locally — the app opens even if the website is down.
+            - Opens straight at the login screen (no marketing page).
+            - Same accounts/modules as the website: each user only sees their own
+              module (travel / construction / Sahl / workshop) — enforced server-side.
+            - Data loads from the live server; if there is no internet the changes
+              are saved locally and sync automatically when the connection returns.
+
+      - name: Publish installer to yasco.tech
+        shell: bash
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -e
+          test -n "$VPS_SSH_KEY" || { echo "::error::Missing VPS_SSH_KEY secret"; exit 1; }
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H 203.161.63.59 >> ~/.ssh/known_hosts 2>/dev/null
+          EXE=$(ls src-tauri/target/release/bundle/nsis/*.exe | head -1)
+          echo "Uploading $EXE"
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "$EXE" root@203.161.63.59:/var/www/YASCO-ERP.exe
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@203.161.63.59 'ls -la /var/www/YASCO-ERP.exe'
+          LOCAL=$(sha256sum "$EXE" | cut -d' ' -f1)
+          REMOTE=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@203.161.63.59 'sha256sum /var/www/YASCO-ERP.exe' | cut -d' ' -f1)
+          [ "$LOCAL" = "$REMOTE" ] || { echo "::error::published installer differs (truncated upload?)"; exit 1; }
+          echo "Published https://yasco.tech/YASCO-ERP.exe (sha256 $LOCAL)"
+
+      - name: Verify public download
+        shell: bash
+        run: |
+          curl -sIL https://yasco.tech/YASCO-ERP.exe | grep -iE "HTTP/|content-length|content-disposition" | head

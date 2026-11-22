@@ -4,9 +4,11 @@ import { trpc } from "@/providers/trpc";
 import { useLanguage } from "@/providers/language";
 import { inputCls, btnCls } from "./ui";
 import {
-  DOC_TITLES, downloadBlob, printInvoice060, render060, renderTemplateXlsx, zatcaQrTlv,
+  DOC_TITLES, downloadBlob, printInvoice060, render060, renderTemplateXlsx,
+  zatcaQrTlv, zatcaTimestamp, printCompany,
   type DocData, type PrintConfig,
 } from "./printEngine";
+import { designByKey, lockedDesignKey } from "./invoiceDesigns";
 
 // Invoice History & Audit — one filterable screen for every document
 // (sales, sales returns, purchase, purchase returns, quotations) with
@@ -263,7 +265,7 @@ export default function SahlInvoiceHistory() {
       no: inv?.invoiceNumber ?? `#${inv?.id}`,
       date: String(inv?.date ?? "").slice(0, 10),
       time: String(inv?.time ?? "").slice(0, 5) || undefined,
-      party: joinTwo(nameEn, nameAr),
+      party: nameEn || nameAr,
       partyAr: nameAr && nameAr !== nameEn ? nameAr : undefined,
       partyTax: inv?.customerVat ?? cust?.vatNumber ?? cust?.taxNumber,
       partyPhone: inv?.customerPhone ?? cust?.phone ?? cust?.mobile,
@@ -288,6 +290,9 @@ export default function SahlInvoiceHistory() {
       companyTax: comp.taxNumber ?? undefined,
       companyContacts: contacts.length ? contacts : undefined,
       accountAddress: joinTwo(addrEn, addrAr) || undefined,
+      accountAddressEn: addrEn || undefined,
+      accountAddressAr: addrAr || undefined,
+      po: String(inv?.poNumber ?? "").trim() || undefined,
       docType: "sale",
       invoiceType: String(inv?.invoiceType ?? "") === "standard" ? "simple" : "zatca",
     } as DocData;
@@ -320,6 +325,8 @@ export default function SahlInvoiceHistory() {
       qtyTotal: items.reduce((a: number, it: any) => a + Number(it.quantity || 0), 0),
       companyTax: comp.taxNumber ?? undefined,
       companyContacts: contacts.length ? contacts : undefined,
+      accountAddressEn: String(s?.address ?? "").trim() || undefined,
+      accountAddressAr: String(s?.addressAr ?? "").trim() || undefined,
       docType: "purchase",
     } as DocData;
   };
@@ -352,6 +359,8 @@ export default function SahlInvoiceHistory() {
       qtyTotal: items.reduce((a: number, it: any) => a + Number(it.quantity || 0), 0),
       companyTax: comp.taxNumber ?? undefined,
       companyContacts: contacts.length ? contacts : undefined,
+      accountAddressEn: String(c?.address ?? "").trim() || undefined,
+      accountAddressAr: String(c?.addressAr ?? "").trim() || undefined,
       docType: "quotation",
     } as DocData;
   };
@@ -366,6 +375,8 @@ export default function SahlInvoiceHistory() {
     const joinTwo = (a: string, b: string) => (a && b && a !== b ? `${a} / ${b}` : a || b);
     const nameEn = String(cust?.name ?? "").trim();
     const nameAr = String(cust?.nameAr ?? "").trim();
+    const addrEn = String(cust?.address ?? "").trim();
+    const addrAr = String(cust?.addressAr ?? "").trim();
     const amount = Number(cn.amount || 0);
     const linesTotal = items.reduce((a: number, it: any) => a + Number(it.totalAmount || 0), 0);
     const subTotal = linesTotal || amount;
@@ -373,7 +384,7 @@ export default function SahlInvoiceHistory() {
     return {
       no: cn?.creditNoteNumber ?? `#${cn?.id}`,
       date: String(cn?.date ?? "").slice(0, 10),
-      party: joinTwo(nameEn, nameAr),
+      party: nameEn || nameAr,
       partyAr: nameAr && nameAr !== nameEn ? nameAr : undefined,
       partyTax: cust?.vatNumber ?? cust?.taxNumber ?? undefined,
       partyPhone: cust?.phone ?? cust?.mobile ?? undefined,
@@ -399,6 +410,9 @@ export default function SahlInvoiceHistory() {
       qtyTotal: items.reduce((a: number, it: any) => a + Number(it.quantity || 0), 0),
       companyTax: comp.taxNumber ?? undefined,
       companyContacts: compContacts(comp).length ? compContacts(comp) : undefined,
+      accountAddress: joinTwo(addrEn, addrAr) || undefined,
+      accountAddressEn: addrEn || undefined,
+      accountAddressAr: addrAr || undefined,
       docType: "sales-return",
     } as DocData;
   };
@@ -406,6 +420,17 @@ export default function SahlInvoiceHistory() {
   const printRow = async (r: HRow, mode: "html" | "xlsx") => {
     if (busy) return;
     setMsg(""); setBusy(r.key);
+    // A locked tenant prints its single reference design from here too, and the
+    // PDF tab has to be opened on the click itself (popup blockers).
+    const lockedKey = lockedDesignKey((company as any)?.tenantId);
+    const pdfWin = mode === "html" && lockedKey ? window.open("about:blank", "_blank") : null;
+    if (pdfWin) {
+      try {
+        pdfWin.document.open();
+        pdfWin.document.write('<!doctype html><html dir="rtl"><meta charset="utf-8"><title>PDF</title><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;font:15px/1.7 system-ui,sans-serif;color:#555;background:#fafafa">جارٍ تجهيز PDF…<br>Preparing PDF…</body></html>');
+        pdfWin.document.close();
+      } catch { /* ignore */ }
+    }
     try {
       let d: DocData;
       let docType: "sale" | "purchase" | "quotation" | "sales-return";
@@ -434,17 +459,41 @@ export default function SahlInvoiceHistory() {
         return;
       }
       const comp: any = company ?? {};
-      const [tar] = DOC_TITLES[docType];
+      const [tar, ten] = DOC_TITLES[docType];
+      // Reference designs print the billing period in their header.
+      const period = (() => {
+        const dt = new Date(String(d.date || "").slice(0, 10) + "T00:00:00");
+        if (isNaN(dt.getTime())) return undefined;
+        const M = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+        return `${dt.getFullYear()} -${M[dt.getMonth()]}`;
+      })();
       // ZATCA QR: keep the stored code, else build a valid TLV for sales.
       if ((docType === "sale" || docType === "sales-return") && !d.qrText && comp.taxNumber && d.invoiceType !== "simple") {
         try {
           d.qrText = zatcaQrTlv({
             seller: comp.companyNameAr || comp.companyName || "",
             vat: comp.taxNumber,
-            timestamp: `${d.date}T${d.time || "00:00"}:00`,
+            timestamp: zatcaTimestamp(d.date, d.time),
             total: d.net, tax: d.tax,
           });
         } catch { /* qr optional */ }
+      }
+      if (mode === "html" && lockedKey) {
+        const design = designByKey(lockedKey);
+        if (!design) throw new Error(T("لا يوجد قالب للطباعة", "No template selected"));
+        d.period = d.period || period;
+        const cfg: PrintConfig = { ...DEFAULT_CFG, docType, titleAr: tar, titleEn: DOC_TITLES[docType][1] };
+        const blob = await renderTemplateXlsx(design.b64, cfg, d, printCompany(comp));
+        // Excel -> PDF on the server (LibreOffice) so print == the workbook.
+        const fd = new FormData();
+        fd.append("file", blob, `${d.no}-${design.key}.xlsx`);
+        const res = await fetch("/api/sahl/xlsx-pdf", { method: "POST", body: fd });
+        if (!res.ok) throw new Error((await res.text()) || `PDF ${res.status}`);
+        const pdf = await res.blob();
+        const url = URL.createObjectURL(pdf);
+        if (pdfWin && !pdfWin.closed) pdfWin.location.replace(url);
+        else downloadBlob(pdf, `${d.no}.pdf`);
+        return;
       }
       if (mode === "html") {
         await printInvoice060(
@@ -453,11 +502,21 @@ export default function SahlInvoiceHistory() {
             nameAr: comp.companyNameAr, name: comp.companyName, tax: comp.taxNumber,
             taxNumber: comp.taxNumber, crNumber: comp.crNumber ?? comp.commercialRegistration,
             logoBase64: comp.logo || undefined,
+            address: comp.address || undefined, addressAr: comp.addressAr || undefined,
           },
-          tar,
+          ten,
         );
       } else {
         const cfg: PrintConfig = { ...DEFAULT_CFG, docType, titleAr: tar, titleEn: DOC_TITLES[docType][1] };
+        if (lockedKey) {
+          const design = designByKey(lockedKey);
+          if (design) {
+            d.period = d.period || period;
+            const blob = await renderTemplateXlsx(design.b64, cfg, d, printCompany(comp));
+            downloadBlob(blob, `${d.no}-${design.key}.xlsx`);
+            return;
+          }
+        }
         // The tenant's own uploaded Excel design (if any) is used for the
         // export — otherwise the built-in 0060 form.
         const tpl = (themesQ ?? []).find((t: any) => t.hasTemplate && t.templateName);
@@ -465,10 +524,9 @@ export default function SahlInvoiceHistory() {
           try {
             const tplFile = await utils.invoiceTheme.getTemplate.fetch({ id: Number(tpl.id) });
             if (tplFile?.templateData) {
-              const blob = await renderTemplateXlsx(tplFile.templateData, cfg, d, {
-                nameAr: comp.companyNameAr, name: comp.companyName, tax: comp.taxNumber,
-                logoBase64: comp.logo || undefined,
-              });
+              // Same company block the sales screen prints, so the exported
+              // invoice carries the CR / VAT / address a tax invoice needs.
+              const blob = await renderTemplateXlsx(tplFile.templateData, cfg, d, printCompany(comp));
               downloadBlob(blob, `${d.no}.xlsx`);
               return;
             }
@@ -484,6 +542,10 @@ export default function SahlInvoiceHistory() {
       }
     } catch (e: any) {
       setMsg(String(e?.message ?? e));
+      try {
+        if (pdfWin && !pdfWin.closed)
+          pdfWin.document.body.innerHTML = '<div style="padding:24px;font:15px system-ui;color:#a00">PDF failed / تعذر إنشاء الـ PDF</div>';
+      } catch { /* ignore */ }
     } finally {
       setBusy("");
     }

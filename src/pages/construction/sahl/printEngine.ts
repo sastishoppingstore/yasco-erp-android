@@ -55,11 +55,16 @@ export interface DocData {
   balBefore?: number; balAfter?: number; hasAccount?: boolean;
   companyTax?: string; companyCr?: string; companyContacts?: string[];
   accountAddress?: string;
+  accountAddressAr?: string;
+  accountAddressEn?: string;
   labels?: { docNo?: string; party?: string; payment?: string; dueDate?: string; cashier?: string; banner?: string; total?: string; };
   terms?: string;
   origInvoiceNo?: string;
   invoiceType?: "zatca" | "simple";
   hideBalances?: boolean;
+  // Reference-workbook design extras
+  period?: string;
+  po?: string;
 }
 
 export const DOC_TITLES: Record<DocType, [string, string]> = {
@@ -205,6 +210,34 @@ export function amountWords(n: number): string {
   return s + " only";
 }
 
+// 0060 wording (matches the Excel references): "One Thousand ... SR only"
+// or "... SR & Fifty Halalh" when there are halalas.
+function amountWordsSr(n: number): string {
+  const ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+    "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+    "Seventeen", "Eighteen", "Nineteen"];
+  const tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+  const two = (x: number): string => {
+    if (x < 20) return ones[x];
+    return tens[Math.floor(x / 10)] + (x % 10 ? " " + ones[x % 10] : "");
+  };
+  const three = (x: number): string => {
+    const h = Math.floor(x / 100), r = x % 100;
+    return (h ? ones[h] + " Hundred" + (r ? " " : "") : "") + (r ? two(r) : "");
+  };
+  if (!Number.isFinite(n)) return "";
+  const neg = n < 0 ? "Minus " : "";
+  n = Math.abs(Math.round(n * 100) / 100);
+  const int = Math.floor(n), dec = Math.round((n - int) * 100);
+  const parts: string[] = [];
+  const mil = Math.floor(int / 1e6), tho = Math.floor((int % 1e6) / 1e3), rest = int % 1e3;
+  if (mil) parts.push(three(mil) + " Million");
+  if (tho) parts.push(three(tho) + " Thousand");
+  if (rest || !parts.length) parts.push(three(rest));
+  const s = neg + parts.join(" ");
+  return dec ? `${s} SR & ${two(dec)} Halalh` : `${s} SR only`;
+}
+
 export function resolveTags(cfg: PrintConfig, d: DocData): { rows: string[][]; tags: Record<string, string> } {
   const cols = cfg.columns.filter((c) => c.visible);
   const head = cols.map((c) => c.ar);
@@ -320,6 +353,28 @@ const escX = (s: any): string =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const r2 = (x: any): number => Math.round((Number(x) || 0) * 100) / 100;
 
+// 0060 client block: Arabic on the first line, English underneath.
+// Old documents only have the joined "EN / AR" address, so split that
+// fallback without changing any saved data.
+function docPartyLines(d: DocData): { top: string; bottom: string } {
+  const en = String(d.party ?? "").trim();
+  const ar = String(d.partyAr ?? "").trim();
+  const top = ar || en;
+  return { top, bottom: en && en !== top ? en : "" };
+}
+function docAddressLines(d: DocData): { top: string; bottom: string } {
+  const raw = String(d.accountAddress ?? "").trim();
+  let en = String(d.accountAddressEn ?? "").trim();
+  let ar = String(d.accountAddressAr ?? "").trim();
+  if (!en && !ar && raw) {
+    const parts = raw.split(/\s*\/\s*/).map((x) => x.trim()).filter(Boolean);
+    en = parts[0] ?? "";
+    if (parts.length > 1) ar = parts.slice(1).join(" / ");
+  }
+  const top = ar || en;
+  return { top, bottom: en && en !== top ? en : "" };
+}
+
 // Excel 1900 date-system serial (works for dates after 1900-02-28).
 const xlSerial = (dateStr?: string): number | undefined => {
   const m = String(dateStr ?? "").slice(0, 10).match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
@@ -342,27 +397,70 @@ function setCell(rowXml: string, row: number, col: string, val?: string | number
     return `<c r="${col}${row}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${escX(val)}</t></is></c>`;
   });
 }
-// A few template rows (e.g. D14 on the Cashier row) have no D cell at all.
-// Insert the value right after the anchor cell, cloning its style.
-function insertCellAfter(rowXml: string, row: number, col: string, afterCol: string, val: string): string {
+// Insert a value right after the anchor cell, with an explicit style (value /
+// money / label) instead of cloning the anchor.
+function insertCellAfterStyled(
+  rowXml: string, row: number, col: string, afterCol: string,
+  val: string | number | null | undefined, styleAttr = "",
+): string {
   const anchorRe = new RegExp(`<c r="${afterCol}${row}"[^>]*?(?:/>|>[\\s\\S]*?</c>)`);
   const m = rowXml.match(anchorRe);
   if (!m) return rowXml;
   const found = m[0];
-  const sAttr = (found.match(/\ss="\d+"/) || [""])[0];
-  const cell = `<c r="${col}${row}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${escX(val)}</t></is></c>`;
+  const sAttr = styleAttr || ((found.match(/\ss="\d+"/) || [""])[0]);
+  let cell: string;
+  if (val === undefined || val === null || val === "" || (typeof val === "number" && !isFinite(val)))
+    cell = `<c r="${col}${row}"${sAttr}/>`;
+  else if (typeof val === "number")
+    cell = `<c r="${col}${row}"${sAttr}><v>${val}</v></c>`;
+  else
+    cell = `<c r="${col}${row}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${escX(val)}</t></is></c>`;
   return rowXml.replace(anchorRe, () => found + cell);
 }
+// The template's first column (A) has no header cell; prepend it in-place.
+function prependCell(rowXml: string, row: number, col: string, val: string, styleAttr = ""): string {
+  const cell = `<c r="${col}${row}"${styleAttr} t="inlineStr"><is><t xml:space="preserve">${escX(val)}</t></is></c>`;
+  return rowXml.replace(/(<row\b[^>]*>)/, `$1${cell}`);
+}
+// setCell keeps the existing style; this applies a different one afterwards
+// (used when a totals label moves from F to the G column).
+function restyleCell(rowXml: string, row: number, col: string, style: number): string {
+  const re = new RegExp(`<c r="${col}${row}"([^>]*?)(/>|>)`);
+  return rowXml.replace(re, (_m, attrs: string, close: string) => {
+    const clean = String(attrs).replace(/\s+s="\d+"/, "");
+    return `<c r="${col}${row}"${clean} s="${style}"${close}`;
+  });
+}
 function renumRow(rowXml: string, oldRow: number, newRow: number): string {
-  if (oldRow === newRow) return rowXml;
-  return rowXml
-    .replace(new RegExp(`<row r="${oldRow}"`), `<row r="${newRow}"`)
-    .replace(new RegExp(`(r="[A-I]{1,2})${oldRow}(")`, "g"), `$1${newRow}$2`);
+  let xml = rowXml;
+  if (oldRow !== newRow) {
+    xml = xml
+      .replace(new RegExp(`<row r="${oldRow}"`), `<row r="${newRow}"`)
+      .replace(new RegExp(`(r="[A-I]{1,2})${oldRow}(")`, "g"), `$1${newRow}$2`);
+  }
+  // The new grid reaches column I, and row 16 gains an A cell, so make the
+  // span hint cover A:I instead of leaving cells outside the declared range.
+  return xml.replace(/spans="\d+:\d+"/, `spans="1:9"`);
+}
+
+// The 0060 template has no left-aligned wrapping data style. Add one to
+// styles.xml and return its cellXfs index so the Job Description column can
+// wrap long text instead of clipping it.
+function ensureWrapStyle(stylesXml: string): { xml: string; index: number } {
+  const m = stylesXml.match(/<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/);
+  if (!m) return { xml: stylesXml, index: 0 };
+  const count = Number(m[1]);
+  const xf = `<xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>`;
+  return {
+    xml: stylesXml.replace(m[0], `<cellXfs count="${count + 1}">${m[2]}${xf}</cellXfs>`),
+    index: count,
+  };
 }
 
 function patchSheet060(
   sheet: string, cfg: PrintConfig, d: DocData,
   company: { nameAr?: string; name?: string; tax?: string },
+  wrapStyle = 0,
 ): { xml: string; thankRow: number } {
   const rows = new Map<number, string>();
   const rowRe = /<row r="(\d+)"[^>]*(?:\/>|>[\s\S]*?<\/row>)/g;
@@ -371,7 +469,8 @@ function patchSheet060(
 
   const note = String(d.notes ?? "").trim();
   const terms = String(d.terms ?? "").trim();
-  const noteCell = [note, terms ? `Terms: ${terms}` : ""].filter(Boolean).join("\n");
+  const origNote = d.origInvoiceNo ? `Original Invoice: ${d.origInvoiceNo}` : "";
+  const noteCell = [note, terms ? `Terms: ${terms}` : "", origNote].filter(Boolean).join("\n");
   const addl = r2(d.additions ?? 0);
   const disc = r2(d.discount ?? 0);
   const net = r2(d.net ?? 0);
@@ -381,15 +480,58 @@ function patchSheet060(
   const creditDue = r2(net - paid);
   const lines = d.lines ?? [];
   const qtyTotal = d.qtyTotal ?? lines.reduce((a, l) => a + Number(l.qty || 0), 0);
+  const linesTotal = r2(lines.reduce((a, l) => a + r2(l.total), 0));
+  const subtotal = r2(d.subtotal || linesTotal);
+  // Invoice-level discount is spread over the lines so the per-line VAT and
+  // Grand Total columns still add up to the invoice totals.
+  const discountFactor = subtotal > 0 ? Math.max(0, subtotal - disc) / subtotal : 1;
   const companyName = company.nameAr || company.name || "";
   const contacts = (d.companyContacts?.length ? d.companyContacts : (cfg.contactLines ?? []))
     .map((x) => String(x ?? "")).filter((x) => x.trim());
+  const client = docPartyLines(d);
+  const address = docAddressLines(d);
+
+  // Style indexes are copied from the untouched template cells, so this keeps
+  // working even if the embedded form is ever regenerated.
+  const styleOf = (oldRow: number, col: string): number => {
+    const m = rows.get(oldRow)?.match(new RegExp(`<c r="${col}${oldRow}"([^>]*)`));
+    return Number((m?.[1].match(/\ss="(\d+)"/) || [])[1] ?? 0);
+  };
+  const valueStyle = styleOf(9, "C") || 5;
+  const labelStyle = styleOf(9, "D") || 4;
+  const headerStyle = styleOf(16, "B") || 1;
+  const itemDescStyle = wrapStyle || styleOf(17, "C") || 16;
+  const itemCenterStyle = styleOf(17, "D") || 2;
+  const itemMoneyStyle = styleOf(17, "F") || 10;
+  const totalLabelStyle = styleOf(18, "F") || labelStyle;
+  const totalMoneyStyle = styleOf(18, "G") || 10;
+  // Totals: labels sit in H (VAT column) and amounts in I (Grand Total), the
+  // same alignment the DC SEP form uses.
+  const amountI = (xml: string, row: number, val: number, moneyStyle: number): string => {
+    let x = xml;
+    if (!new RegExp(`<c r="I${row}"`).test(x))
+      x = insertCellAfterStyled(x, row, "I", "H", val, ` s="${moneyStyle}"`);
+    else x = setCell(x, row, "I", val);
+    return x;
+  };
+  const labelH = (xml: string, row: number, label: string, style: number): string => {
+    let x = setCell(xml, row, "F", null);
+    x = setCell(x, row, "G", null);
+    if (!new RegExp(`<c r="H${row}"`).test(x))
+      x = insertCellAfterStyled(x, row, "H", "G", label, ` s="${style}"`);
+    else {
+      x = setCell(x, row, "H", label);
+      x = restyleCell(x, row, "H", style);
+    }
+    return x;
+  };
 
   // Output row plan (template row numbers, item row repeated per line).
-  type Step = { old: number; itemIdx?: number };
+  type Step = { old: number; itemIdx?: number; headAr?: boolean };
   const plan: Step[] = [];
   for (let r = 7; r <= 14; r++) plan.push({ old: r });
-  if (note || terms) plan.push({ old: 15 });
+  if (note || terms || origNote) plan.push({ old: 15 });
+  plan.push({ old: 16, headAr: true });
   plan.push({ old: 16 });
   const nItems = Math.max(1, lines.length);
   for (let i = 0; i < nItems; i++) plan.push({ old: 17, itemIdx: i });
@@ -407,102 +549,174 @@ function patchSheet060(
   const out: string[] = [];
   let r = 7;
   let thankRow = 28;
+  let noteRow = 0;
   for (const step of plan) {
     const tpl = rows.get(step.old);
     if (!tpl) continue;
     let xml = renumRow(tpl, step.old, r);
+    // Drop the template's column-I control cells (<#if ... delete row>) before
+    // the new I (Grand Total) column is written.
+    xml = xml.replace(/<c r="I\d+"[^>]*(?:\/>|>[\s\S]*?<\/c>)/g, "");
     if (step.itemIdx != null) {
       const l = lines[step.itemIdx];
-      if (l) {
-        const disp = (() => { const n = String(l.name ?? "").replace(/^\[(?:custom-)?\d+\]\s*/, "").trim(); const a = String(l.nameAr ?? "").trim(); return a && a !== n ? `${n ? n + " / " : ""}${a}` : n || a; })();
-        xml = setCell(xml, r, "A", step.itemIdx + 1);
-        xml = setCell(xml, r, "B", l.code || null);
-        xml = setCell(xml, r, "C", disp || null);
-        xml = setCell(xml, r, "D", l.unit || null);
-        xml = setCell(xml, r, "E", Number(l.qty || 0));
-        xml = setCell(xml, r, "F", r2(l.price));
-        xml = setCell(xml, r, "G", r2(l.total));
-      } else {
-        for (const c of ["A", "B", "C", "D", "E", "F", "G"]) xml = setCell(xml, r, c, null);
-      }
+      const disp = l ? (() => { const n = String(l.name ?? "").replace(/^\[(?:custom-)?\d+\]\s*/, "").trim(); const a = String(l.nameAr ?? "").trim(); return a && a !== n ? `${n ? n + " / " : ""}${a}` : n || a; })() : "";
+      const qty = Number(l?.qty || 0);
+      const price = r2(l?.price ?? 0);
+      const gross = r2(qty * price);
+      const lineTotal = r2(l?.total ?? gross);
+      const lineBase = r2(lineTotal * discountFactor);
+      const lineVat = r2(lineBase * taxPct / 100);
+      const lineGrand = r2(lineBase + lineVat);
+      // Give two-line descriptions enough height so the wrapped text is not
+      // clipped when Excel opens the generated workbook.
+      const descLines = Math.ceil(disp.length / 16);
+      const needH = descLines > 1 ? Math.min(96, descLines * 12 + 4) : 0;
+      if (needH) xml = xml.replace(new RegExp(`<row r="${r}"`), `<row r="${r}" ht="${needH}" customHeight="1"`);
+      // A Item No | B Job Description | C Unit | D Hours | E Hour Price |
+      // F Price | G Total | H VAT | I Grand Total
+      xml = setCell(xml, r, "A", l ? step.itemIdx + 1 : null);
+      xml = setCell(xml, r, "B", l ? (disp || null) : null);
+      xml = restyleCell(xml, r, "B", itemDescStyle);
+      xml = setCell(xml, r, "C", l ? (l.unit || null) : null);
+      xml = restyleCell(xml, r, "C", itemCenterStyle);
+      xml = setCell(xml, r, "D", l ? qty : null);
+      xml = restyleCell(xml, r, "D", itemCenterStyle);
+      xml = setCell(xml, r, "E", l ? price : null);
+      xml = restyleCell(xml, r, "E", itemMoneyStyle);
+      xml = setCell(xml, r, "F", l ? gross : null);
+      xml = restyleCell(xml, r, "F", itemMoneyStyle);
+      xml = setCell(xml, r, "G", l ? lineTotal : null);
+      xml = restyleCell(xml, r, "G", itemMoneyStyle);
+      xml = insertCellAfterStyled(xml, r, "H", "G", l ? lineVat : null, ` s="${itemMoneyStyle}"`);
+      xml = insertCellAfterStyled(xml, r, "I", "H", l ? lineGrand : null, ` s="${itemMoneyStyle}"`);
     } else {
       switch (step.old) {
         case 7:
-          xml = setCell(xml, r, "B", cfg.titleAr || "");
-          // The gray merged banner (C7:G7) announces the document: sales invoices
-          // carry "Tax Invoice" (as in the original 0060 form), other doc types
-          // keep the company name they always had unless labels.banner overrides.
+          // No Arabic document title: the gray banner carries "Tax Invoice".
+          xml = setCell(xml, r, "B", null);
           xml = setCell(xml, r, "C", d.labels?.banner ?? (cfg.docType === "sale" ? (d.invoiceType === "simple" ? "Invoice" : "Tax Invoice") : companyName));
           break;
         case 8:
-          xml = setCell(xml, r, "C", d.partyCr ? `C.R. No. ${d.partyCr}` : null);
-          // "Tax No." belongs in the same column as the other right hand
-          // labels (Client / Arabic Name / Address / Phone No. / Email) so it
-          // starts on the very same left edge as they do.
-          xml = setCell(xml, r, "D", d.partyTax ? `Tax No. ${d.partyTax}` : null);
-          xml = setCell(xml, r, "E", null);
+          xml = setCell(xml, r, "B", "Tax No.");
+          xml = restyleCell(xml, r, "B", labelStyle);
+          xml = setCell(xml, r, "C", d.partyTax || null);
+          xml = restyleCell(xml, r, "C", valueStyle);
+          xml = setCell(xml, r, "D", null);
+          xml = setCell(xml, r, "E", "C.R. No.");
+          xml = restyleCell(xml, r, "E", labelStyle);
+          xml = insertCellAfterStyled(xml, r, "F", "E", d.partyCr || null, ` s="${valueStyle}"`);
           break;
         case 9:
           xml = setCell(xml, r, "B", d.labels?.docNo ?? "Doc. No.");
           xml = setCell(xml, r, "C", d.no);
-          xml = setCell(xml, r, "D", d.party ? `${d.labels?.party ?? "Client"}: ${d.party}` : null);
+          xml = setCell(xml, r, "D", null);
+          xml = insertCellAfterStyled(xml, r, "E", "D", d.labels?.party ?? "Client", ` s="${labelStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "F", "E", client.top || null, ` s="${valueStyle}"`);
           break;
         case 10:
           xml = setCell(xml, r, "B", d.labels?.payment ?? "Payment");
           xml = setCell(xml, r, "C", d.paymentType ?? null);
-          xml = setCell(xml, r, "D", d.partyAr ? `Arabic Name: ${d.partyAr}` : null);
+          xml = setCell(xml, r, "D", null);
+          xml = insertCellAfterStyled(xml, r, "E", "D", null, ` s="${labelStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "F", "E", client.bottom || null, ` s="${valueStyle}"`);
           break;
         case 11:
+          xml = setCell(xml, r, "B", "Date");
           xml = setCell(xml, r, "C", xlSerial(d.date) ?? null);
-          xml = setCell(xml, r, "D", d.accountAddress ? `Address: ${d.accountAddress}` : null);
+          xml = setCell(xml, r, "D", null);
+          xml = insertCellAfterStyled(xml, r, "E", "D", "Address", ` s="${labelStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "F", "E", address.top || null, ` s="${valueStyle}"`);
           break;
         case 12:
+          xml = setCell(xml, r, "B", "Time");
           xml = setCell(xml, r, "C", xlTime(d.time) ?? null);
-          xml = setCell(xml, r, "D", d.partyPhone ? `Phone No.: ${d.partyPhone}` : null);
+          xml = setCell(xml, r, "D", null);
+          xml = insertCellAfterStyled(xml, r, "E", "D", "Tax No.", ` s="${labelStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "F", "E", d.partyTax || null, ` s="${valueStyle}"`);
           break;
         case 13:
           xml = setCell(xml, r, "B", d.labels?.dueDate ?? "Due Date");
           xml = setCell(xml, r, "C", d.dueDateText ? d.dueDateText : (xlSerial(d.dueDate || d.date) ?? null));
-          xml = setCell(xml, r, "D", d.partyEmail ? `Email: ${d.partyEmail}` : null);
+          xml = setCell(xml, r, "D", null);
+          xml = insertCellAfterStyled(xml, r, "E", "D", "C.R. No.", ` s="${labelStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "F", "E", d.partyCr || null, ` s="${valueStyle}"`);
           break;
         case 14: {
-          xml = setCell(xml, r, "B", d.labels?.cashier ?? "Cashier");
+          xml = setCell(xml, r, "B", d.labels?.cashier ?? "Owner Name");
           xml = setCell(xml, r, "C", d.cashier ?? null);
-          const orig = d.origInvoiceNo ? `Original Invoice: ${d.origInvoiceNo}` : null;
-          if (orig && !new RegExp(`<c r="D${r}"`).test(xml)) xml = insertCellAfter(xml, r, "D", "C", orig);
-          else xml = setCell(xml, r, "D", orig);
+          xml = insertCellAfterStyled(xml, r, "D", "C", null, ` s="${labelStyle}"`);
           break;
         }
-        case 15: xml = setCell(xml, r, "C", noteCell); break;
-        case 18:
-          xml = setCell(xml, r, "E", qtyTotal);
-          xml = setCell(xml, r, "G", r2(d.subtotal));
+        case 15: {
+          noteRow = r;
+          const noteLines = noteCell.split(/\n/).reduce((a, line) => a + Math.max(1, Math.ceil(line.length / 60)), 0);
+          xml = xml.replace(new RegExp(`<row r="${r}"`), `<row r="${r}" ht="${Math.max(15, Math.min(90, noteLines * 12 + 4))}" customHeight="1"`);
+          xml = setCell(xml, r, "C", noteCell);
+          xml = restyleCell(xml, r, "C", itemDescStyle);
           break;
+        }
+        case 16: {
+          const ar = !!step.headAr;
+          const labels = ar
+            ? ["مسلسل", "الوصف / الفئة", "الوحدة", "الكمية", "السعر الافرادي", "السعر", "الاجمالي", "ض القيمة المضافة", "الإجمالي بالضريبة"]
+            : ["Item No.", "Job Description", "Unit", "Hours", "Hour Price", "Price", "Total", "VAT", "Grand Total"];
+          xml = xml.replace(/(<row\b[^>]*?)\s+ht="[^"]*"/, "$1");
+          xml = xml.replace(/(<row\b[^>]*?)\s+customHeight="[^"]*"/, "$1");
+          xml = xml.replace(new RegExp(`<row r="${r}"`), `<row r="${r}" ht="${ar ? 30 : 26}" customHeight="1"`);
+          xml = prependCell(xml, r, "A", labels[0], ` s="${headerStyle}"`);
+          for (let c = 0; c < 6; c++) xml = setCell(xml, r, "BCDEFG"[c], labels[c + 1]);
+          xml = insertCellAfterStyled(xml, r, "H", "G", labels[7], ` s="${headerStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "I", "H", labels[8], ` s="${headerStyle}"`);
+          break;
+        }
+        case 18: {
+          xml = setCell(xml, r, "B", null);
+          xml = insertCellAfterStyled(xml, r, "C", "B", null, ` s="${itemCenterStyle}"`);
+          xml = insertCellAfterStyled(xml, r, "D", "C", qtyTotal, ` s="${itemCenterStyle}"`);
+          xml = setCell(xml, r, "E", null);
+          xml = labelH(xml, r, "Total", totalLabelStyle);
+          xml = amountI(xml, r, subtotal, totalMoneyStyle);
+          break;
+        }
         case 19:
-          xml = setCell(xml, r, "F", d.additionType || "الإضافات");
-          xml = setCell(xml, r, "G", addl);
+          xml = labelH(xml, r, d.additionType || "Additions", totalLabelStyle);
+          xml = amountI(xml, r, addl, totalMoneyStyle);
           break;
-        case 20: xml = setCell(xml, r, "G", disc); break;
+        case 20:
+          xml = labelH(xml, r, "Discount", totalLabelStyle);
+          xml = amountI(xml, r, disc, totalMoneyStyle);
+          break;
         case 21:
-          xml = setCell(xml, r, "F", `VAT ${taxPct}%`);
-          xml = setCell(xml, r, "G", r2(d.tax));
+          xml = labelH(xml, r, `VAT ${taxPct}%`, totalLabelStyle);
+          xml = amountI(xml, r, r2(d.tax), totalMoneyStyle);
           break;
         case 22:
-          xml = setCell(xml, r, "C", amountWordsAr(net));
-          xml = setCell(xml, r, "G", net);
+          xml = setCell(xml, r, "C", amountWordsSr(net));
+          xml = labelH(xml, r, d.labels?.total ?? "Due", totalLabelStyle);
+          xml = amountI(xml, r, net, totalMoneyStyle);
           break;
-        case 23: xml = setCell(xml, r, "G", paid); break;
-        case 24: xml = setCell(xml, r, "G", creditDue); break;
-        case 25: xml = setCell(xml, r, "G", r2(d.balBefore ?? 0)); break;
-        case 26: xml = setCell(xml, r, "G", r2(d.balAfter ?? d.balBefore ?? 0)); break;
+        case 23:
+          xml = labelH(xml, r, "Paid", totalLabelStyle);
+          xml = amountI(xml, r, paid, totalMoneyStyle);
+          break;
+        case 24:
+          xml = labelH(xml, r, "Credit", totalLabelStyle);
+          xml = amountI(xml, r, creditDue, totalMoneyStyle);
+          break;
+        case 25:
+          xml = labelH(xml, r, "Bal. Prior", totalLabelStyle);
+          xml = amountI(xml, r, r2(d.balBefore ?? 0), totalMoneyStyle);
+          break;
+        case 26:
+          xml = labelH(xml, r, "Bal. After", totalLabelStyle);
+          xml = amountI(xml, r, r2(d.balAfter ?? d.balBefore ?? 0), totalMoneyStyle);
+          break;
         case 28: thankRow = r; break;
         case 29: case 30: case 31:
           xml = setCell(xml, r, "B", contacts[step.old - 29] ?? null);
           break;
       }
     }
-    // strip leftover column-I control cells (<#if ... delete row>)
-    xml = xml.replace(/<c r="I\d+"[^>]*(?:\/>|>[\s\S]*?<\/c>)/g, "");
     out.push(xml);
     r++;
   }
@@ -512,7 +726,35 @@ function patchSheet060(
   if (s0 < 0 || s1 < 0) return { xml: sheet, thankRow };
   let xml = sheet.slice(0, s0) + "<sheetData>" + out.join("") + "</sheetData>" + sheet.slice(s1 + "</sheetData>".length);
   xml = xml.replace(/<dimension ref="[^"]*"[^>]*\/>/, `<dimension ref="A7:I${r - 1}"/>`);
-  xml = xml.replace(/<mergeCell ref="B28:G28"[^>]*\/>/, `<mergeCell ref="B${thankRow}:G${thankRow}"/>`);
+  const merges = [`C7:I7`, ...(noteRow ? [`C${noteRow}:I${noteRow}`] : []), `B${thankRow}:I${thankRow}`];
+  xml = xml.replace(
+    /<mergeCells count="\d+">[\s\S]*?<\/mergeCells>/,
+    `<mergeCells count="${merges.length}">${merges.map((ref) => `<mergeCell ref="${ref}"/>`).join("")}</mergeCells>`,
+  );
+  // 9-column grid (DC SEP style): A Item No, B Job Description, C Unit,
+  // D Hours, E Hour Price, F Price, G Total, H VAT, I Grand Total.
+  xml = xml.replace(/<cols>[\s\S]*?<\/cols>/, `<cols>` +
+    `<col min="1" max="1" width="8" style="5" bestFit="1" customWidth="1"/>` +
+    `<col min="2" max="2" width="15" style="5" customWidth="1"/>` +
+    `<col min="3" max="3" width="11.5" style="5" customWidth="1"/>` +
+    `<col min="4" max="4" width="7.5" style="5" customWidth="1"/>` +
+    `<col min="5" max="5" width="9.5" style="5" customWidth="1"/>` +
+    `<col min="6" max="6" width="10" style="5" customWidth="1"/>` +
+    `<col min="7" max="7" width="10" style="5" customWidth="1"/>` +
+    `<col min="8" max="8" width="10" style="5" customWidth="1"/>` +
+    `<col min="9" max="9" width="12" style="5" customWidth="1"/>` +
+    `<col min="10" max="16384" width="11.5703125" style="5"/>` +
+    `</cols>`);
+  // The 9-column grid is wider than A5: force one-page-wide printing.
+  if (!/<sheetPr\b/.test(xml)) {
+    xml = xml.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>`);
+  } else if (/<sheetPr\b[^>]*\/>/.test(xml)) {
+    xml = xml.replace(/<sheetPr\b[^>]*\/>/, `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>`);
+  } else if (!/fitToPage=/.test(xml)) {
+    xml = xml.replace(/(<sheetPr\b[^>]*>)/, `$1<pageSetUpPr fitToPage="1"/>`);
+  }
+  xml = xml.replace(/<pageSetup\b[^>]*\/>/, (m) =>
+    m.replace(/\s+(?:fitToWidth|fitToHeight|scale)="[^"]*"/g, "").replace(/\s*\/>$/, ` fitToWidth="1" fitToHeight="0"/>`));
   return { xml, thankRow };
 }
 
@@ -525,7 +767,14 @@ export async function render060(
     const zip = await JSZip.loadAsync(FORM0060_B64, { base64: true });
     const sheetFile = zip.file("xl/worksheets/sheet1.xml");
     if (!sheetFile) throw new Error("0060 template: sheet1 missing");
-    const { xml: patchedSheet, thankRow } = patchSheet060(await sheetFile.async("string"), cfg, d, company);
+    let wrapStyle = 0;
+    const stylesFile = zip.file("xl/styles.xml");
+    if (stylesFile) {
+      const w = ensureWrapStyle(await stylesFile.async("string"));
+      zip.file("xl/styles.xml", w.xml);
+      wrapStyle = w.index;
+    }
+    const { xml: patchedSheet, thankRow } = patchSheet060(await sheetFile.async("string"), cfg, d, company, wrapStyle);
     zip.file("xl/worksheets/sheet1.xml", patchedSheet);
 
     // real ZATCA QR replaces the sample QR placeholder (media/image1.png)
@@ -548,8 +797,8 @@ export async function render060(
         const m = drw.match(/<xdr:twoCellAnchor[^>]*>[\s\S]*?<\/xdr:twoCellAnchor>/);
         if (m) {
           let a = m[0];
-          a = a.replace(/(<xdr:from>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow - 1}$2`);
-          a = a.replace(/(<xdr:to>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow - 1 + 5}$2`);
+          a = a.replace(/(<xdr:from>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow}$2`);
+          a = a.replace(/(<xdr:to>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow + 5}$2`);
           zip.file("xl/drawings/drawing1.xml", drw.replace(m[0], a));
         }
       }
@@ -607,8 +856,11 @@ async function logoToJpegBytes(logo?: string | null): Promise<Uint8Array | null>
 export function zatcaQrTlv(f: { seller: string; vat: string; timestamp: string; total: string | number; tax: string | number }): string {
   const enc = (tag: number, val: string): Uint8Array => {
     const b = new TextEncoder().encode(val);
-    const out = new Uint8Array(2 + b.length);
-    out[0] = tag; out[1] = b.length; out.set(b, 2);
+    // Long Arabic seller names run past 127 UTF-8 bytes, and a one-byte
+    // length then wraps — the QR stops decoding.
+    const head = b.length < 128 ? [tag, b.length] : [tag, 0x81, b.length];
+    const out = new Uint8Array(head.length + b.length);
+    out.set(head, 0); out.set(b, head.length);
     return out;
   };
   const parts = [
@@ -621,6 +873,17 @@ export function zatcaQrTlv(f: { seller: string; vat: string; timestamp: string; 
   return bytesToB64(all);
 }
 
+// ZATCA wants the issue time as ISO-8601 with an offset; the ledger times in
+// this app are KSA wall clock.
+export function zatcaTimestamp(date?: string, time?: string): string {
+  const day = /^\d{4}-\d{2}-\d{2}/.test(String(date || "")) ? String(date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const t = String(time || "").trim();
+  const hm = t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  const pad = (v: number) => String(v).padStart(2, "0");
+  const clock = hm ? `${pad(Number(hm[1]) % 24)}:${pad(Number(hm[2]) % 60)}:${pad(Number(hm[3] || 0) % 60)}` : "00:00:00";
+  return `${day}T${clock}+03:00`;
+}
+
 // render060Scratch: original from-scratch builder (kept as fallback).
 async function render060Scratch(
   cfg: PrintConfig, d: DocData,
@@ -630,8 +893,8 @@ async function render060Scratch(
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("invoice", { views: [{ rightToLeft: true }] });
   ws.columns = [
-    { width: 6 }, { width: 14 }, { width: 34 }, { width: 12 },
-    { width: 10 }, { width: 12 }, { width: 14 }, { width: 4 }, { width: 14 },
+    { width: 5 }, { width: 30 }, { width: 8 }, { width: 7 },
+    { width: 10 }, { width: 10 }, { width: 10 }, { width: 9 }, { width: 12 },
   ];
   const accent = (cfg.accent || "#2fae4e").replace("#", "");
   const acc = "FF" + accent;
@@ -639,7 +902,7 @@ async function render060Scratch(
     const r = ws.addRow(["", txt]);
     r.font = { bold: true, size: 13, color: { argb: "FFFFFFFF" } };
     r.fill = { type: "pattern", pattern: "solid", fgColor: { argb: acc } };
-    ws.mergeCells(`B${r.number}:G${r.number}`);
+    ws.mergeCells(`A${r.number}:I${r.number}`);
     r.alignment = { horizontal: "center" };
     return r;
   };
@@ -649,49 +912,54 @@ async function render060Scratch(
     return r;
   };
 
-  head(`${cfg.titleAr} — ${cfg.titleEn}`);
+  head(cfg.titleEn || "");
   const co = company.nameAr || company.name || "";
   ws.addRow(["", "", co]);
   if (company.tax) ws.addRow(["", "", "", "", `Tax No. ${company.tax}`]);
   kv("Doc. No.", d.no, "Client", d.party ?? "");
-  kv("Payment", d.paymentType ?? "", "Arabic Name", d.partyAr ?? "");
-  kv("C.R. No.", d.partyCr ?? "", "Tax No.", d.partyTax ?? "");
+  kv("Payment", d.paymentType ?? "", "", "");
+  kv("Tax No.", d.partyTax ?? "", "C.R. No.", d.partyCr ?? "");
   kv("Date", d.date, "Address", d.accountAddress ?? "");
-  kv("Time", d.time ?? "", "Phone No.", d.partyPhone ?? "");
-  kv("Due Date", d.dueDate ?? d.date, "Email", d.partyEmail ?? "");
-  kv("Cashier", d.cashier ?? "", "", "");
+  kv("Time", d.time ?? "", "", "");
+  kv("Due Date", d.dueDate ?? d.date, "", "");
+  kv("Owner Name", d.cashier ?? "", "", "");
   kv("Remarks", d.notes ?? "", "", "");
-  const itemHead = ws.addRow(["", "Item No.", "Job Description", "Unit", "Qty", "Price", "Total"]);
+  const itemHead = ws.addRow(["Item No.", "Job Description", "Unit", "Hours", "Hour Price", "Price", "Total", "VAT", "Grand Total"]);
   itemHead.font = { bold: true, color: { argb: "FFFFFFFF" } };
   itemHead.fill = { type: "pattern", pattern: "solid", fgColor: { argb: acc } };
+  const subTot = Number(d.subtotal || 0);
+  const discFactor = subTot > 0 ? Math.max(0, subTot - Number(d.discount || 0)) / subTot : 1;
   let sn = 0;
   for (const l of d.lines) {
     sn++;
-    ws.addRow([sn, l.code ?? "", l.name, l.unit ?? "", l.qty,
-      Number(l.price).toFixed(2), Number(l.total).toFixed(2)]);
+    const lineBase = Math.round(Number(l.total) * discFactor * 100) / 100;
+    const lineVat = Math.round(lineBase * Number(d.taxPct ?? 15) / 100 * 100) / 100;
+    ws.addRow([sn, l.name, l.unit ?? "", l.qty,
+      Number(l.price).toFixed(2), Number(l.qty * l.price).toFixed(2), Number(l.total).toFixed(2),
+      lineVat.toFixed(2), (lineBase + lineVat).toFixed(2)]);
   }
   const qtyTot = d.qtyTotal ?? d.lines.reduce((a, l) => a + Number(l.qty || 0), 0);
-  ws.addRow(["", "", "", "", qtyTot, "Total", d.subtotal.toFixed(2)]);
+  ws.addRow(["", "", "", qtyTot, "", "", "", "Total", subTot.toFixed(2)]);
   if ((d.additions ?? 0) !== 0)
-    ws.addRow(["", "", "", "", "", d.additionType ?? "Additions", Number(d.additions).toFixed(2)]);
+    ws.addRow(["", "", "", "", "", "", "", d.additionType ?? "Additions", Number(d.additions).toFixed(2)]);
   if (d.discount !== 0)
-    ws.addRow(["", "", "", "", "", "Discount", d.discount.toFixed(2)]);
+    ws.addRow(["", "", "", "", "", "", "", "Discount", d.discount.toFixed(2)]);
   if (cfg.showTax)
-    ws.addRow(["", "", "", "", "", `VAT ${d.taxPct ?? 15}%`, d.tax.toFixed(2)]);
-  const due = ws.addRow(["", "Due", amountWordsAr(d.net), "", "", "Due", d.net.toFixed(2)]);
+    ws.addRow(["", "", "", "", "", "", "", `VAT ${d.taxPct ?? 15}%`, d.tax.toFixed(2)]);
+  const due = ws.addRow(["", "Due", amountWordsSr(d.net), "", "", "", "", "Due", d.net.toFixed(2)]);
   due.font = { bold: true };
-  ws.addRow(["", "", "", "", "", "Paid", Number(d.paid || 0).toFixed(2)]);
+  ws.addRow(["", "", "", "", "", "", "", "Paid", Number(d.paid || 0).toFixed(2)]);
   const remaining = d.net - Number(d.paid || 0);
   if (remaining !== 0)
-    ws.addRow(["", "", "", "", "", "Credit", remaining.toFixed(2)]);
+    ws.addRow(["", "", "", "", "", "", "", "Credit", remaining.toFixed(2)]);
   if (cfg.showBalances !== false && d.hasAccount) {
-    ws.addRow(["", "", "", "", "", "Bal. Prior", Number(d.balBefore ?? 0).toFixed(2)]);
-    ws.addRow(["", "", "", "", "", "Bal. After", Number(d.balAfter ?? d.balBefore ?? 0).toFixed(2)]);
+    ws.addRow(["", "", "", "", "", "", "", "Bal. Prior", Number(d.balBefore ?? 0).toFixed(2)]);
+    ws.addRow(["", "", "", "", "", "", "", "Bal. After", Number(d.balAfter ?? d.balBefore ?? 0).toFixed(2)]);
   }
   const th = ws.addRow(["", "Thank You"]);
   th.font = { bold: true, size: 13, color: { argb: "FFFFFFFF" } };
   th.fill = { type: "pattern", pattern: "solid", fgColor: { argb: acc } };
-  ws.mergeCells(`B${th.number}:G${th.number}`);
+  ws.mergeCells(`A${th.number}:I${th.number}`);
   th.alignment = { horizontal: "center" };
   const contacts = d.companyContacts?.length ? d.companyContacts : (cfg.contactLines ?? []);
   for (const c of contacts) if (c && c.trim()) ws.addRow(["", c]);
@@ -701,7 +969,7 @@ async function render060Scratch(
       const jpg = await logoToJpegBytes(company.logoBase64);
       if (jpg) {
         const imgId = wb.addImage({ base64: bytesToB64(jpg), extension: "jpeg" });
-        ws.addImage(imgId, { tl: { col: 6, row: 0 }, ext: { width: 90, height: 60 } });
+        ws.addImage(imgId, { tl: { col: 7, row: 0 }, ext: { width: 90, height: 60 } });
       }
     } catch { /* logo optional */ }
   }
@@ -788,7 +1056,8 @@ export function printHtml(title: string, bodyHtml: string) {
 // so "Save as PDF" produces the invoice itself — not a screenshot of the app.
 // ---------------------------------------------------------------------------
 function invoice060Html(
-  d: DocData, company: { nameAr?: string; name?: string; tax?: string; taxNumber?: string; crNumber?: string },
+  d: DocData,
+  company: { nameAr?: string; name?: string; tax?: string; taxNumber?: string; crNumber?: string; address?: string; addressAr?: string },
   title: string, logoUrl: string, qrUrl: string,
 ): string {
   const esc = (x: any) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -801,21 +1070,36 @@ function invoice060Html(
   const creditDue = Math.round((net - paid) * 100) / 100;
   const lines = d.lines ?? [];
   const qtyTotal = d.qtyTotal ?? lines.reduce((a, l) => a + Number(l.qty || 0), 0);
+  const subtotal = Number(d.subtotal || lines.reduce((a, l) => a + Number(l.total || 0), 0));
+  const taxPct = Number(d.taxPct ?? 15);
+  const discountFactor = subtotal > 0 ? Math.max(0, subtotal - disc) / subtotal : 1;
   const contacts = (d.companyContacts ?? []).map((x) => String(x ?? "")).filter((x) => x.trim());
   const co = company.nameAr || company.name || "";
-  const words = amountWordsAr(net);
-  const noteTxt = [String(d.notes ?? ""), d.terms ? `Terms: ${String(d.terms)}` : ""]
+  const coAddrEn = String(company.address ?? "").trim();
+  const coAddrAr = String(company.addressAr ?? "").trim();
+  const words = amountWordsSr(net);
+  const client = docPartyLines(d);
+  const address = docAddressLines(d);
+  const twoLine = (top: string, bottom: string) =>
+    [top, bottom].filter(Boolean).map((x) => `<div dir="auto">${esc(x)}</div>`).join("");
+  const noteTxt = [String(d.notes ?? ""), d.terms ? `Terms: ${String(d.terms)}` : "", d.origInvoiceNo ? `Original Invoice: ${String(d.origInvoiceNo)}` : ""]
     .filter((x) => x !== "").join("\n");
   const cleanIt = (s: any) => String(s ?? "").replace(/^\[(?:custom-)?\d+\]\s*/, "").trim();
   const itRows = lines.length
-    ? lines.map((l, i) =>
-        `<tr><td class="sn">${i + 1}</td><td class="c bd">${esc(l.code ?? "")}</td><td class="l bd">${esc(cleanIt(l.name))}${l.nameAr && cleanIt(l.nameAr) !== cleanIt(l.name) ? ` <span dir="rtl">${esc(l.nameAr)}</span>` : ""}</td>` +
-        `<td class="c bd">${esc(l.unit ?? "")}</td><td class="c bd">${Number(l.qty || 0)}</td>` +
-        `<td class="c bd">${n2(l.price)}</td><td class="c bd">${n2(l.total)}</td></tr>`).join("")
-    : `<tr><td class="sn">1</td><td class="c bd"></td><td class="l bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td></tr>`;
+    ? lines.map((l, i) => {
+        const lineTotal = Number(l.total || 0);
+        const lineBase = Math.round(lineTotal * discountFactor * 100) / 100;
+        const lineVat = Math.round(lineBase * taxPct) / 100;
+        const lineGrand = Math.round((lineBase + lineVat) * 100) / 100;
+        return `<tr><td class="sn bd">${i + 1}</td><td class="l bd desc">${esc(cleanIt(l.name))}${l.nameAr && cleanIt(l.nameAr) !== cleanIt(l.name) ? ` <span dir="rtl">${esc(l.nameAr)}</span>` : ""}</td>` +
+          `<td class="c bd">${esc(l.unit ?? "")}</td><td class="c bd">${Number(l.qty || 0)}</td>` +
+          `<td class="c bd">${n2(l.price)}</td><td class="c bd">${n2(Number(l.qty || 0) * Number(l.price || 0))}</td>` +
+          `<td class="c bd">${n2(lineTotal)}</td><td class="c bd">${n2(lineVat)}</td><td class="c bd bold">${n2(lineGrand)}</td></tr>`;
+      }).join("")
+    : `<tr><td class="sn bd">1</td><td class="l bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td><td class="c bd"></td></tr>`;
 
   const valRow = (label: string, val: string, bold = false, size = "") =>
-    `<tr><td colspan="5"></td><td class="lbl"${size ? ` style="font-size:${size}"` : ""}>${label}</td>` +
+    `<tr><td colspan="7"></td><td class="lbl"${size ? ` style="font-size:${size}"` : ""}>${label}</td>` +
     `<td class="c bd ${bold ? "bold" : ""}"${size ? ` style="font-size:${size}"` : ""}>${val}</td></tr>`;
 
   // Time shown like the .xlsx does (h:mm AM/PM instead of 24h "18:09").
@@ -860,6 +1144,8 @@ function invoice060Html(
   .c { text-align:center; } .l { text-align:left; }
   .sn { text-align:center; }
   .lbl { font-weight:700; text-align:left; white-space:nowrap; }
+  .desc { white-space:normal; word-break:break-word; }
+  .wrap { white-space:normal; word-break:break-word; }
   .bold { font-weight:700; }
   </style></head><body><div class="sheet">
   <div class="lh">
@@ -880,46 +1166,53 @@ function invoice060Html(
     </div>
   </div>
   <table><colgroup>
-    <col style="width:4.3%"><col style="width:10.3%"><col style="width:34%">
-    <col style="width:7.7%"><col style="width:7.7%"><col style="width:15.4%"><col style="width:20.6%">
+    <col style="width:8%"><col style="width:21%"><col style="width:7%">
+    <col style="width:6%"><col style="width:10%"><col style="width:10%">
+    <col style="width:10%"><col style="width:10%"><col style="width:18%">
   </colgroup><tbody>
     <tr class="gray" style="height:26.25pt">
-      <td></td><td style="font-size:10pt">${esc(title)}</td>
-      <td colspan="5" class="c" style="font-size:16pt">${esc(d.labels?.banner ?? (d.docType === "sale" ? (d.invoiceType === "simple" ? "Invoice" : "Tax Invoice") : co))}</td>
+      <td></td><td></td>
+      <td colspan="7" class="c" style="font-size:16pt">${esc(d.labels?.banner ?? (d.docType === "sale" ? (d.invoiceType === "simple" ? "Invoice" : "Tax Invoice") : co))}</td>
     </tr>
-    <tr><td></td><td class="lbl">C.R. No</td><td>${esc(d.partyCr ?? "")}</td><td class="lbl">Tax No.</td><td colspan="3">${esc(d.partyTax ?? "")}</td></tr>
-    <tr><td></td><td class="lbl">${esc(d.labels?.docNo ?? "Doc. No.")}</td><td>${esc(d.no)}</td><td class="lbl">${esc(d.labels?.party ?? "Client")}</td><td colspan="3">${esc(d.party ?? "")}</td></tr>
-    <tr><td></td><td class="lbl">${esc(d.labels?.payment ?? "Payment")}</td><td>${esc(d.paymentType ?? "")}</td><td class="lbl" style="white-space:normal">Arabic Name</td><td colspan="3">${esc(d.partyAr ?? "")}</td></tr>
-    <tr><td></td><td class="lbl">Date</td><td>${esc(d.date)}</td><td class="lbl">Address</td><td colspan="3">${esc(d.accountAddress ?? "")}</td></tr>
-    <tr><td></td><td class="lbl">Time</td><td>${esc(t12)}</td><td class="lbl">Phone No.</td><td colspan="3">${esc(d.partyPhone ?? "")}</td></tr>
-    <tr><td></td><td class="lbl">${esc(d.labels?.dueDate ?? "Due Date")}</td><td>${esc(d.dueDate ?? d.date)}</td><td class="lbl">Email</td><td colspan="3">${esc(d.partyEmail ?? "")}</td></tr>
-    <tr><td></td><td class="lbl">${esc(d.labels?.cashier ?? "Cashier")}</td><td>${esc(d.cashier ?? "")}</td><td colspan="4">${d.origInvoiceNo ? `Original Invoice: ${esc(d.origInvoiceNo)}` : ""}</td></tr>
-    ${noteTxt ? `<tr><td></td><td></td><td></td><td class="lbl">Note</td><td colspan="3" style="font-size:9pt;white-space:pre-wrap;word-break:break-word">${esc(noteTxt)}</td></tr>` : ""}
+    <tr><td></td><td class="lbl">${esc(d.labels?.docNo ?? "Doc. No.")}</td><td colspan="2">${esc(d.no)}</td><td class="lbl">${esc(d.labels?.party ?? "Client")}</td><td colspan="4" class="l wrap">${twoLine(client.top, client.bottom)}</td></tr>
+    <tr><td></td><td class="lbl">${esc(d.labels?.payment ?? "Payment")}</td><td colspan="2">${esc(d.paymentType ?? "")}</td><td colspan="5"></td></tr>
+    <tr><td></td><td class="lbl">Date</td><td colspan="2">${esc(d.date)}</td><td class="lbl">Address</td><td colspan="4" class="l wrap">${twoLine(address.top, address.bottom)}</td></tr>
+    <tr><td></td><td class="lbl">Time</td><td colspan="2">${esc(t12)}</td><td class="lbl">Tax No.</td><td colspan="4">${esc(d.partyTax ?? "")}</td></tr>
+    <tr><td></td><td class="lbl">${esc(d.labels?.dueDate ?? "Due Date")}</td><td colspan="2">${esc(d.dueDate ?? d.date)}</td><td class="lbl">C.R. No.</td><td colspan="4">${esc(d.partyCr ?? "")}</td></tr>
+    <tr><td></td><td class="lbl">${esc(d.labels?.cashier ?? "Owner Name")}</td><td colspan="2">${esc(d.cashier ?? "")}</td><td colspan="5"></td></tr>
+    ${noteTxt ? `<tr><td></td><td></td><td colspan="2"></td><td class="lbl">Note</td><td colspan="4" class="l wrap" style="font-size:9pt;white-space:pre-wrap">${esc(noteTxt)}</td></tr>` : ""}
     <tr style="height:30pt;font-weight:700" class="c">
-      <td></td><td class="bd">Item No.</td><td class="bd">Job Description</td><td class="bd">Unit</td>
-      <td class="bd">Qty</td><td class="bd">Price</td><td class="bd">Total</td>
+      <td class="bd">مسلسل</td><td class="bd">الوصف / الفئة</td><td class="bd">الوحدة</td>
+      <td class="bd">الكمية</td><td class="bd">السعر الافرادي</td><td class="bd">السعر</td><td class="bd">الاجمالي</td>
+      <td class="bd">ض القيمة المضافة</td><td class="bd">الإجمالي بالضريبة</td>
+    </tr>
+    <tr style="height:26pt;font-weight:700" class="c">
+      <td class="bd">Item No.</td><td class="bd">Job Description</td><td class="bd">Unit</td>
+      <td class="bd">Hours</td><td class="bd">Hour Price</td><td class="bd">Price</td><td class="bd">Total</td>
+      <td class="bd">VAT</td><td class="bd">Grand Total</td>
     </tr>
     ${itRows}
-    <tr><td></td><td></td><td></td><td></td><td class="c bd">${qtyTotal}</td><td class="lbl">Total</td><td class="c bd">${n2(d.subtotal)}</td></tr>
-    ${addl ? valRow(esc(d.additionType || "الإضافات"), n2(addl)) : ""}
+    <tr><td></td><td></td><td></td><td class="c bd">${qtyTotal}</td><td></td><td></td><td></td><td class="lbl">Total</td><td class="c bd">${n2(subtotal)}</td></tr>
+    ${addl ? valRow(esc(d.additionType || "Additions"), n2(addl)) : ""}
     ${disc ? valRow("Discount", n2(disc)) : ""}
-    <tr><td colspan="5"></td><td class="lbl">VAT ${Number(d.taxPct ?? 15)}%</td><td class="c bd">${n2(d.tax)}</td></tr>
+    <tr><td colspan="7"></td><td class="lbl">VAT ${taxPct}%</td><td class="c bd">${n2(d.tax)}</td></tr>
     <tr style="height:17.25pt">
-      <td></td><td class="lbl">${esc(d.labels?.total ?? "Due")}</td><td class="l">${esc(words)}</td><td colspan="2"></td>
+      <td></td><td class="lbl">${esc(d.labels?.total ?? "Due")}</td><td colspan="5" class="l wrap" style="font-size:8pt">${esc(words)}</td>
       <td class="lbl" style="font-size:10pt">Due</td><td class="c bd bold" style="font-size:10pt">${n2(net)}</td>
     </tr>
     ${d.hideBalances ? "" : valRow("Paid", n2(paid))}
     ${!d.hideBalances && creditDue ? valRow("Credit", n2(creditDue)) : ""}
     ${!d.hideBalances && d.hasAccount ? valRow("Bal. Prior", n2(d.balBefore)) + valRow("Bal. After", n2(d.balAfter ?? d.balBefore)) : ""}
-    <tr style="height:8pt"><td colspan="7"></td></tr>
+    <tr style="height:8pt"><td colspan="9"></td></tr>
     <tr class="gray" style="height:26.25pt">
-      <td></td><td colspan="6" class="c" style="font-size:16pt">Thank You</td>
+      <td></td><td colspan="8" class="c" style="font-size:12pt;font-weight:700;line-height:1.35">${coAddrEn || coAddrAr ? `${coAddrEn ? `<div dir="auto">${esc(coAddrEn)}</div>` : ""}${coAddrAr ? `<div dir="auto">${esc(coAddrAr)}</div>` : ""}` : "Thank You"}</td>
     </tr>
     <tr>
       <td></td>
-      <td colspan="2" style="vertical-align:top;font-size:8pt;line-height:1.4">${contacts.map((c) => `<div>${esc(c)}</div>`).join("")}</td>
-      <td colspan="3" class="c">${qrUrl ? `<img src="${qrUrl}" style="width:26mm;height:26mm" alt="">` : ""}</td>
-      <td></td>
+      <td colspan="8" style="vertical-align:top;font-size:8pt;line-height:1.4">${contacts.map((c) => `<div>${esc(c)}</div>`).join("")}</td>
+    </tr>
+    <tr>
+      <td colspan="9" class="c" style="padding-top:4pt">${qrUrl ? `<img src="${qrUrl}" style="width:26mm;height:26mm" alt="">` : ""}</td>
     </tr>
   </tbody></table>
   </div></body></html>`;
@@ -964,44 +1257,118 @@ function cellTextOf(cellXml: string, shared: string[]): string {
   }
   return xmlDecode((cellXml.match(/<v>([\s\S]*?)<\/v>/) || [])[1] || "");
 }
+function periodLabel(dateStr?: string): string {
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const dt = new Date(String(dateStr || "").slice(0, 10) + "T00:00:00");
+  if (isNaN(dt.getTime())) return "";
+  return `${dt.getFullYear()} -${months[dt.getMonth()]}`;
+}
+const MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"];
+function periodLong(dateStr?: string): string {
+  const dt = new Date(String(dateStr || "").slice(0, 10) + "T00:00:00");
+  if (isNaN(dt.getTime())) return "";
+  return `${dt.getFullYear()} ${MONTHS_LONG[dt.getMonth()]}`;
+}
+// Excel serials so the template's own date/time number formats are used.
+function excelSerialDate(value?: string): number | null {
+  const m = String(value || "").match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (!y || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return Math.round((Date.UTC(y, mo - 1, d) - Date.UTC(1899, 11, 30)) / 86400000);
+}
+function excelSerialTime(value?: string): number | null {
+  const m = String(value || "").trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]), s = Number(m[3] || 0);
+  if (h > 23 || mi > 59 || s > 59) return null;
+  return (h * 3600 + mi * 60 + s) / 86400;
+}
+const AR_DIGITS = "٠١٢٣٤٥٦٧٨٩";
+function arDigits(value: any): string {
+  return String(value ?? "").replace(/[0-9]/g, (c) => AR_DIGITS[Number(c)]);
+}
+
 function tagValue(
-  tag: string, d: DocData, company: any, line: DocLine | null,
+  tag: string, d: DocData, company: any, line: DocLine | null, lineIndex = 0,
 ): string | number | null {
   const t = tag.trim();
   const n = (v: any) => Number(v || 0);
+  const pct = Number(d.taxPct ?? 15);
   if (/^<Items:/i.test(t)) {
     if (!line) return ""; // stray item tag outside the item row → clear it
+    if (/^<Items:no>/i.test(t)) return lineIndex + 1;
     if (/^<Items:title>/i.test(t)) return line.name ?? "";
     if (/^<Items:code>/i.test(t)) return line.code ?? "";
     if (/^<Items:unit>/i.test(t)) return line.unit ?? "";
     if (/^<Items:user_qty>|^<Items:qty>/i.test(t)) return n(line.qty);
     if (/^<Items:price>/i.test(t)) return n(line.price);
-    if (/^<Items:total_price>|^<Items:net_price>/i.test(t)) return n(line.total);
+    if (/^<Items:total>|^<Items:total_price>|^<Items:net_price>|^<Items:amount>/i.test(t)) return n(line.total);
     if (/^<Items:discount>/i.test(t)) return n(line.disc);
+    if (/^<Items:vat>|^<Items:tax_amount>/i.test(t)) return Math.round(n(line.total) * pct) / 100;
+    if (/^<Items:grand>|^<Items:grand_total>/i.test(t)) return Math.round(n(line.total) * (100 + pct)) / 100;
     return null;
   }
   if (/^<Data:no>/i.test(t)) return d.no ?? "";
   if (/^<Data:reference>/i.test(t)) return (d as any).reference ?? "";
-  if (/^<Data:date>/i.test(t)) return d.date ?? "";
-  if (/^<Data:time>/i.test(t)) return d.time ?? "";
-  if (/^<Data:total_price>/i.test(t)) return n(d.subtotal);
+  if (/^<Data:date>/i.test(t)) { const s = excelSerialDate(d.date); return s ?? (d.date ?? ""); }
+  if (/^<Data:time>/i.test(t)) { const s = excelSerialTime(d.time); return s ?? (d.time ?? ""); }
+  if (/^<Data:period_long>/i.test(t)) return (d as any).periodLong || periodLong(d.date);
+  if (/^<Data:period>/i.test(t)) return d.period || periodLabel(d.date);
+  if (/^<Data:payment>/i.test(t)) return d.paymentType ?? "";
+  if (/^<Data:cashier>/i.test(t)) return d.cashier ?? "";
+  if (/^<Data:due_date>/i.test(t)) {
+    const v = d.dueDate || d.dueDateText || "";
+    const s = excelSerialDate(v);
+    return s ?? v;
+  }
+  if (/^<Data:po>/i.test(t)) return d.po ?? "";
+  if (/^<Data:note>/i.test(t)) return d.notes ?? "";
+  if (/^<Data:qty_total>/i.test(t)) return n(d.qtyTotal);
+  if (/^<Data:vat_pct>/i.test(t)) return pct;
+  if (/^<Data:subtotal>|^<Data:total_price>/i.test(t)) return n(d.subtotal);
   if (/^<Data:discount>/i.test(t)) return n(d.discount);
-  if (/^<Data:net_price>/i.test(t)) return n(d.net);
+  if (/^<Data:net_price>|^<Data:grand_total>/i.test(t)) return n(d.net);
   if (/^<Data:tax_amount>/i.test(t)) return n(d.tax);
   if (/^<Data:paid>/i.test(t)) return n(d.paid);
   if (/^<Data:remaining>/i.test(t)) return n(d.net) - n(d.paid);
+  // Arabic line only — never fall back to the Latin name, otherwise designs that
+  // print name_ar above name show the same client twice.
+  if (/^<Account:name_ar>/i.test(t)) return d.partyAr ?? "";
+  if (/^<Account:name>/i.test(t)) return d.party ?? "";
   if (/^<Account:title>/i.test(t)) return d.party ?? "";
-  if (/^<Account:tax_id>/i.test(t)) return d.partyTax ?? "";
+  if (/^<Account:tax>|^<Account:tax_id>/i.test(t)) return d.partyTax ?? "";
+  if (/^<Account:cr>/i.test(t)) return d.partyCr ?? "";
   if (/^<Account:phone>/i.test(t)) return d.partyPhone ?? "";
+  if (/^<Account:email>/i.test(t)) return d.partyEmail ?? "";
+  if (/^<Account:address_ar>/i.test(t)) return d.accountAddressAr ?? "";
+  if (/^<Account:address>|^<Account:address_en>/i.test(t)) return d.accountAddressEn ?? d.accountAddress ?? "";
   if (/^<Branch:name>/i.test(t)) return d.branch ?? "";
+  if (/^<Company:name_ar>/i.test(t)) return company?.nameAr ?? "";
+  if (/^<Company:name>/i.test(t)) return company?.name ?? "";
+  if (/^<Company:tax_ar>/i.test(t)) return arDigits(company?.tax ?? "");
+  if (/^<Company:cr_ar>/i.test(t)) return arDigits(company?.cr ?? "");
+  if (/^<Company:tax>/i.test(t)) return company?.tax ?? "";
+  if (/^<Company:cr>/i.test(t)) return company?.cr ?? "";
+  if (/^<Company:phone>/i.test(t)) return company?.phone ?? "";
+  if (/^<Company:email>/i.test(t)) return company?.email ?? "";
+  if (/^<Company:website>/i.test(t)) return company?.website ?? "";
+  if (/^<Company:address_ar>/i.test(t)) return company?.addressAr ?? "";
+  if (/^<Company:address>/i.test(t)) return company?.address ?? "";
+  if (/^<Company:unn>|^<Company:unified>/i.test(t)) return company?.unn ?? "";
+  if (/^<Company:city>/i.test(t)) return company?.city ?? "";
+  if (/^<Company:country>/i.test(t)) return company?.country ?? "";
+  if (/^<Company:zip>|^<Company:postal>/i.test(t)) return company?.zip ?? "";
+  if (/^<AmountWords>/i.test(t)) return amountWordsSr(n(d.net));
   if (/^<AmountString>/i.test(t)) return amountWords(d.net);
   if (/^<ZATCA:QR_TLV>/i.test(t)) return d.qrText ?? "";
-  if (/^<Company:name>/i.test(t)) return company?.nameAr || company?.name || "";
   return null;
 }
+
 function patchTemplateSheet(
   sheet: string, d: DocData, company: any, shared: string[],
-): string {
+): { xml: string; itemRow: number; delta: number } {
   const rowRe = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g;
   const rows: { num: number; attrs: string; inner: string }[] = [];
   let m: RegExpExecArray | null;
@@ -1013,7 +1380,7 @@ function patchTemplateSheet(
       inner: m[2] ?? "",
     });
   }
-  if (!rows.length) return sheet;
+  if (!rows.length) return { xml: sheet, itemRow: 0, delta: 0 };
 
   const lines = d.lines ?? [];
   // The tag text inside the XML is escaped (&lt;Items:title&gt;) — the row is
@@ -1028,7 +1395,7 @@ function patchTemplateSheet(
   };
   const itemIdx = rows.findIndex((r) => rowHasItems(r.inner));
 
-  const patchInner = (inner: string, rowNum: number, line: DocLine | null): string => {
+  const patchInner = (inner: string, rowNum: number, line: DocLine | null, li: number): string => {
     const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
     return inner.replace(cellRe, (full, attrs: string) => {
       const ref = (attrs.match(/r="([A-Z]+)\d+"/) || [])[1];
@@ -1038,7 +1405,7 @@ function patchTemplateSheet(
       let newText = text;
       let numeric = false;
       for (const tg of tags) {
-        const v = tagValue(tg, d, company, line);
+        const v = tagValue(tg, d, company, line, li);
         if (v === null) continue;
         newText = newText.replace(tg, typeof v === "number" ? String(v) : String(v));
         if (typeof v === "number" && text.trim() === tg) numeric = true;
@@ -1050,7 +1417,7 @@ function patchTemplateSheet(
       const keep = style ? ` s="${style}"` : "";
       if (newText === text) {
         // no tag to replace, only the row number moved
-        return `<c r="${newRef}"${keep}${attrs.replace(/\st="[^"]*"/, "").replace(/r="[^"]*"/, "").replace(/^\s+/, "")}${full.endsWith("/>") ? "/>" : `>${(full.match(/>([\s\S]*)<\/c>/) || [])[1] || ""}</c>`}`;
+        return full.replace(/r="[^"]*"/, `r="${newRef}"`);
       }
       const innerXml = numeric
         ? `<v>${newText}</v>`
@@ -1061,7 +1428,8 @@ function patchTemplateSheet(
   };
 
   const out: { num: number; attrs: string; inner: string }[] = [];
-  const delta = Math.max(0, lines.length - 1);
+  const delta = itemIdx >= 0 ? Math.max(0, lines.length - 1) : 0;
+  const itemRow = itemIdx >= 0 ? rows[itemIdx].num : 0;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     if (i === itemIdx) {
@@ -1071,7 +1439,7 @@ function patchTemplateSheet(
         out.push({
           num: newNum,
           attrs: r.attrs.replace(/r="\d+"/, `r="${newNum}"`),
-          inner: patchInner(r.inner, newNum, ln),
+          inner: patchInner(r.inner, newNum, ln, li),
         });
       });
       continue;
@@ -1080,7 +1448,7 @@ function patchTemplateSheet(
     out.push({
       num: newNum,
       attrs: newNum !== r.num ? r.attrs.replace(/r="\d+"/, `r="${newNum}"`) : r.attrs,
-      inner: patchInner(r.inner, newNum, null),
+      inner: patchInner(r.inner, newNum, null, 0),
     });
   }
 
@@ -1092,15 +1460,129 @@ function patchTemplateSheet(
   const maxRow = out.length ? Math.max(...out.map((r) => r.num)) : 1;
   outXml = outXml.replace(/<dimension ref="([^"]+)"/, (_m, ref) =>
     `<dimension ref="${ref.replace(/(\d+)$/, String(maxRow))}"`);
-  return outXml;
+  outXml = shiftMerges(outXml, itemRow, delta);
+  return { xml: outXml, itemRow, delta };
 }
 
-// Replace the pictures of an uploaded design: the picture named
-// "<#invoice_qrcode>" gets the real ZATCA QR, the first other picture gets
-// the company logo.
-async function applyTemplateImages(
-  zip: any, qr: Uint8Array | null, logo: Uint8Array | null,
-): Promise<void> {
+// Rows below the item row move down by `delta` — merged ranges must follow.
+function shiftMerges(xml: string, itemRow: number, delta: number): string {
+  if (!itemRow || delta <= 0) return xml;
+  return xml.replace(/<mergeCell ref="([^"]+)"\/>/g, (_full, ref: string) => {
+    const moved = ref.replace(/([A-Z]+)(\d+)/g, (mm, col: string, row: string) =>
+      Number(row) > itemRow ? `${col}${Number(row) + delta}` : mm);
+    return `<mergeCell ref="${moved}"/>`;
+  });
+}
+
+// Drawing anchors (QR, stamp, footer art) sit below the item row: move them.
+function shiftDrawingAnchors(drawing: string, itemRow: number, delta: number): string {
+  if (!itemRow || delta <= 0) return drawing;
+  return drawing.replace(/<xdr:twoCellAnchor\b[\s\S]*?<\/xdr:twoCellAnchor>/g, (anchor) => {
+    const fromRow = Number((anchor.match(/<xdr:from>[\s\S]*?<xdr:row>(\d+)<\/xdr:row>/) || [])[1] || 0);
+    if (fromRow < itemRow) return anchor;
+    return anchor.replace(/(<xdr:(?:from|to)>[\s\S]*?<xdr:row>)(\d+)(<\/xdr:row>)/g,
+      (_m, a: string, row: string, b: string) => `${a}${Number(row) + delta}${b}`);
+  });
+}
+
+// Print area of the workbook grows with the repeated item rows.
+function shiftPrintArea(xml: string, itemRow: number, delta: number): string {
+  if (!itemRow || delta <= 0) return xml;
+  return xml.replace(/(<definedName name="_xlnm\.Print_Area"[^>]*>)([^<]*)(<\/definedName>)/,
+    (_m, a: string, ref: string, b: string) => {
+      const moved = ref.replace(/(\$?[A-Z]+\$?)(\d+)/g, (mm, col: string, row: string) =>
+        Number(row) > itemRow ? `${col}${Number(row) + delta}` : mm);
+      return a + moved + b;
+    });
+}
+
+// Tags inside text boxes / drawing runs must be replaced there as well.
+function patchDrawingTags(drawing: string, d: DocData, company: any): string {
+  return drawing.replace(/<a:t>([\s\S]*?)<\/a:t>/g, (full, raw: string) => {
+    const text = xmlDecode(raw);
+    const tags = text.match(/<[^<>]+>/g);
+    if (!tags) return full;
+    let out = text;
+    for (const tg of tags) {
+      const v = tagValue(tg, d, company, null, 0);
+      if (v !== null) out = out.replace(tg, String(v));
+    }
+    return `<a:t>${xmlEncode(out)}</a:t>`;
+  });
+}
+
+// Pictures in a design are addressed by name:
+//   <#invoice_qrcode> -> ZATCA QR, <#company_logo> -> tenant logo,
+//   <#company_stamp> -> tenant stamp.  Legacy designs without a name keep the
+//   old behaviour (first non-QR picture = logo).
+type ImgSlots = { qr?: string | null; logo?: string | null; stamp?: string | null };
+
+function asDataUrl(src?: string | null): string | null {
+  if (!src) return null;
+  const s = String(src).trim();
+  if (!s) return null;
+  return /^data:/i.test(s) ? s : `data:image/png;base64,${s}`;
+}
+
+// Logos/stamps straight from company settings are often 1200px+ photos; at
+// the ~1.2in they print, 300px is already 240dpi, and shrinking them keeps
+// the print workbook small (the PDF upload drops from >1MB to <200KB).
+const IMG_MAX_PX = 300;
+
+async function loadImageEl(url: string): Promise<HTMLImageElement | null> {
+  return await new Promise<HTMLImageElement | null>((resolve) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => resolve(null);
+    el.src = url;
+  });
+}
+
+async function rasterTo(
+  url: string,
+  mime: "image/png" | "image/jpeg",
+  maxPx = 0,
+  preloaded?: HTMLImageElement | null,
+): Promise<Uint8Array | null> {
+  const img = preloaded || (await loadImageEl(url));
+  if (!img) return null;
+  const nw = img.naturalWidth || img.width;
+  const nh = img.naturalHeight || img.height;
+  const scale = maxPx > 0 ? Math.min(1, maxPx / Math.max(nw, nh)) : 1;
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(nw * scale));
+  c.height = Math.max(1, Math.round(nh * scale));
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  if (mime === "image/jpeg") { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); }
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  return b64ToBytes(c.toDataURL(mime, 0.95).split(",")[1]);
+}
+
+async function imageBytes(url: string | null, target: string): Promise<Uint8Array | null> {
+  if (!url) return null;
+  let src = url.trim();
+  // Some company profiles store the payload without the data: prefix.
+  if (!/^data:/i.test(src) && /^[A-Za-z0-9+/]+={0,2}$/.test(src) && src.length > 512 && src.length % 4 === 0) {
+    src = `data:image/png;base64,${src}`;
+  }
+  const m = src.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.*)$/s);
+  if (!m) return null;
+  const mime = m[1].toLowerCase();
+  const ext = (target.toLowerCase().split(".").pop() || "png");
+  if (ext === "png" || ext === "jpg" || ext === "jpeg") {
+    const out = ext === "png" ? "image/png" : "image/jpeg";
+    const same = out === mime;
+    const el = await loadImageEl(url);
+    const dim = el ? Math.max(el.naturalWidth || el.width, el.naturalHeight || el.height) : 0;
+    if (!dim) return b64ToBytes(m[2]);
+    if (dim <= IMG_MAX_PX && same) return b64ToBytes(m[2]);
+    return rasterTo(url, out, IMG_MAX_PX, el);
+  }
+  return b64ToBytes(m[2]);
+}
+
+async function applyTemplateImages(zip: any, slots: ImgSlots): Promise<void> {
   try {
     const rels = zip.file("xl/drawings/_rels/drawing1.xml.rels");
     const drw = zip.file("xl/drawings/drawing1.xml");
@@ -1111,16 +1593,18 @@ async function applyTemplateImages(
     for (const m of relXml.matchAll(/Id="([^"]+)"[^>]*Target="\.\.\/media\/([^"]+)"/g)) relMap[m[1]] = m[2];
     let logoDone = false;
     for (const pic of drwXml.match(/<xdr:pic>[\s\S]*?<\/xdr:pic>/g) || []) {
-      const name = (pic.match(/name="([^"]*)"/) || [])[1] || "";
+      const name = xmlDecode((pic.match(/name="([^"]*)"/) || [])[1] || "");
       const rid = (pic.match(/r:embed="([^"]+)"/) || [])[1] || "";
       const target = relMap[rid];
       if (!target) continue;
-      if (/qrcode/i.test(name)) {
-        if (qr) zip.file(`xl/media/${target}`, qr);
-      } else if (!logoDone && logo) {
-        zip.file(`xl/media/${target}`, logo);
-        logoDone = true;
-      }
+      let url: string | null | undefined;
+      if (/qrcode/i.test(name)) url = slots.qr;
+      else if (/stamp/i.test(name)) url = slots.stamp;
+      else if (/logo/i.test(name)) { url = slots.logo; logoDone = true; }
+      else if (!logoDone) { url = slots.logo; logoDone = true; }
+      if (!url) continue;
+      const bytes = await imageBytes(url, target);
+      if (bytes) zip.file(`xl/media/${target}`, bytes);
     }
   } catch { /* images optional */ }
 }
@@ -1135,16 +1619,76 @@ function looksLike0060(sheetXml: string, shared: string[], drawingXml: string): 
     if (t) texts.push(t);
   }
   const all = texts.join(" | ");
+  // A tagged reference-workbook design is never the 0060 form.
+  if (/<Company:|<Account:|<Items:|<AmountWords>/i.test(all + " " + xmlDecode(drawingXml))) return false;
   const hasQrSlot = /invoice_qrcode/i.test(drawingXml);
   const docNo = /Doc\.?\s*No|Doc\.?\s*Number|رقم\s*المستند/i.test(all);
   const client = /Client|العميل/i.test(all);
   return hasQrSlot && docNo && client;
 }
 
-// Render an invoice from the tenant's uploaded Excel design.
+// The company row straight from settings.companySettingsGet, in the shape the
+// invoice designs ask for. Logo/stamp can be saved under either column name by
+// the different company-profile screens, so both are accepted.
+export function printCompany(comp: any) {
+  const c = comp ?? {};
+  return {
+    name: c.companyName ?? "", nameAr: c.companyNameAr ?? "",
+    tax: c.taxNumber ?? "", cr: c.crNumber ?? c.commercialRegistration ?? "",
+    phone: c.phone ?? c.mobile ?? "", email: c.email ?? "",
+    website: c.website ?? "", address: c.address ?? "", addressAr: c.addressAr ?? "",
+    // ZATCA seller identity: unified national number plus the address parts
+    // the e-invoice rules ask for on a tax invoice.
+    unn: c.unifiedNationalNo ?? "", city: c.city ?? "",
+    country: c.country ?? "", zip: c.zipCode ?? "",
+    logoBase64: c.logo || c.logoUrl || undefined,
+    stampBase64: c.stamp || c.stampUrl || undefined,
+  };
+}
+
+// Render an invoice from the tenant's uploaded Excel design (or one of the
+// three built-in reference designs).
+/**
+ * Force a worksheet onto a single printed page.
+ *
+ * Excel/LibreOffice honour `fitToPage` together with fitToWidth/fitToHeight=1 by
+ * scaling the sheet down until it fits one page — which is what the invoice
+ * designs need (an invoice must never spill onto a second sheet). A fixed
+ * `scale` is removed because OOXML forbids combining it with fitToPage.
+ */
+function forceSinglePage(xml: string): string {
+  // 1) <sheetPr> (first child of <worksheet>) must carry <pageSetUpPr fitToPage="1"/>.
+  if (/<pageSetUpPr\b[^>]*\/>/.test(xml)) {
+    xml = xml.replace(/<pageSetUpPr\b[^>]*\/>/, `<pageSetUpPr fitToPage="1"/>`);
+  } else if (/<sheetPr\b[^>]*\/>/.test(xml)) {
+    xml = xml.replace(/<sheetPr\b[^>]*\/>/, `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>`);
+  } else if (/<sheetPr\b[^>]*>/.test(xml)) {
+    xml = xml.replace(/(<sheetPr\b[^>]*>)/, `$1<pageSetUpPr fitToPage="1"/>`);
+  } else {
+    xml = xml.replace(/(<worksheet\b[^>]*>)/, `$1<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>`);
+  }
+
+  // 2) Fit to exactly one page wide AND one page tall.
+  const fitOne = ` fitToWidth="1" fitToHeight="1"`;
+  if (/<pageSetup\b[^>]*\/>/.test(xml)) {
+    xml = xml.replace(/<pageSetup\b[^>]*\/>/, (m) =>
+      m.replace(/\s+(?:fitToWidth|fitToHeight|scale)="[^"]*"/g, "").replace(/\s*\/>$/, `${fitOne}/>`));
+  } else if (/<pageSetup\b[^>]*>[\s\S]*?<\/pageSetup>/.test(xml)) {
+    xml = xml.replace(/<pageSetup\b[^>]*>[\s\S]*?<\/pageSetup>/, `<pageSetup${fitOne}/>`);
+  } else if (/<pageMargins\b[^>]*\/>/.test(xml)) {
+    xml = xml.replace(/(<pageMargins\b[^>]*\/>)/, `$1<pageSetup${fitOne}/>`);
+  }
+  return xml;
+}
+
 export async function renderTemplateXlsx(
   templateB64: string, cfg: PrintConfig, d: DocData,
-  company: { nameAr?: string; name?: string; tax?: string; logoBase64?: string },
+  company: {
+    nameAr?: string; name?: string; tax?: string; cr?: string; phone?: string;
+    email?: string; website?: string; address?: string; addressAr?: string;
+    unn?: string; city?: string; country?: string; zip?: string;
+    logoBase64?: string; stampBase64?: string;
+  },
 ): Promise<Blob> {
   const JSZip = (await import("jszip")).default;
   const zip = await JSZip.loadAsync(templateB64, { base64: true });
@@ -1157,21 +1701,31 @@ export async function renderTemplateXlsx(
   const drawing = drawFile ? await drawFile.async("string") : "";
 
   // real ZATCA QR (png) for the QR slot
-  let qrPng: Uint8Array | null = null;
+  let qrUrl: string | null = null;
   if (d.qrText) {
     try {
       const QRCode = (await import("qrcode")).default;
-      const url = await QRCode.toDataURL(d.qrText, { width: 260, margin: 0, errorCorrectionLevel: "M" });
-      qrPng = b64ToBytes(url.split(",")[1]);
+      qrUrl = await QRCode.toDataURL(d.qrText, { width: 320, margin: 0, errorCorrectionLevel: "M" });
     } catch { /* qr optional */ }
   }
-  const logoJpg = await logoToJpegBytes(company.logoBase64);
+  const slots: ImgSlots = {
+    qr: qrUrl,
+    logo: asDataUrl(company.logoBase64),
+    stamp: asDataUrl(company.stampBase64),
+  };
 
   if (looksLike0060(sheet, shared, drawing)) {
     // ---- the uploaded file IS the 0060 tax form: patch it the proven way ----
-    const { xml: patchedSheet, thankRow } = patchSheet060(sheet, cfg, d, company);
+    let wrapStyle = 0;
+    const stylesFile = zip.file("xl/styles.xml");
+    if (stylesFile) {
+      const w = ensureWrapStyle(await stylesFile.async("string"));
+      zip.file("xl/styles.xml", w.xml);
+      wrapStyle = w.index;
+    }
+    const { xml: patchedSheet, thankRow } = patchSheet060(sheet, cfg, d, company as any, wrapStyle);
     zip.file("xl/worksheets/sheet1.xml", patchedSheet);
-    await applyTemplateImages(zip, qrPng, logoJpg);
+    await applyTemplateImages(zip, slots);
     // keep the QR anchor beside the Thank-You row
     try {
       const drwFile = zip.file("xl/drawings/drawing1.xml");
@@ -1180,16 +1734,38 @@ export async function renderTemplateXlsx(
         const m = drw.match(/<xdr:twoCellAnchor[^>]*>[\s\S]*?<\/xdr:twoCellAnchor>/);
         if (m) {
           let a = m[0];
-          a = a.replace(/(<xdr:from>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow - 1}$2`);
-          a = a.replace(/(<xdr:to>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow - 1 + 5}$2`);
+          a = a.replace(/(<xdr:from>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow}$2`);
+          a = a.replace(/(<xdr:to>[\s\S]*?<xdr:row>)\d+(<\/xdr:row>)/, `$1${thankRow + 5}$2`);
           zip.file("xl/drawings/drawing1.xml", drw.replace(m[0], a));
         }
       }
     } catch { /* keep original anchors */ }
   } else {
     // ---- any other design: replace the Sahl tags inside it ----
-    zip.file("xl/worksheets/sheet1.xml", patchTemplateSheet(sheet, d, company, shared));
-    await applyTemplateImages(zip, qrPng, logoJpg);
+    const patched = patchTemplateSheet(sheet, d, company, shared);
+    zip.file("xl/worksheets/sheet1.xml", patched.xml);
+
+    if (drawing) {
+      let drw = patchDrawingTags(drawing, d, company);
+      drw = shiftDrawingAnchors(drw, patched.itemRow, patched.delta);
+      zip.file("xl/drawings/drawing1.xml", drw);
+    }
+    if (patched.delta > 0) {
+      const wbFile = zip.file("xl/workbook.xml");
+      if (wbFile) {
+        const wb = await wbFile.async("string");
+        zip.file("xl/workbook.xml", shiftPrintArea(wb, patched.itemRow, patched.delta));
+      }
+    }
+    await applyTemplateImages(zip, slots);
+  }
+
+  // One-page print: force every design (and the 0060 form) to scale down to a
+  // single sheet, so neither the PDF nor the Excel export ever spills onto a
+  // second page.
+  {
+    const sheetFile2 = zip.file("xl/worksheets/sheet1.xml");
+    if (sheetFile2) zip.file("xl/worksheets/sheet1.xml", forceSinglePage(await sheetFile2.async("string")));
   }
 
   const out = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
@@ -1198,7 +1774,7 @@ export async function renderTemplateXlsx(
 
 export async function printInvoice060(
   d: DocData,
-  company: { nameAr?: string; name?: string; tax?: string; taxNumber?: string; crNumber?: string; logoBase64?: string },
+  company: { nameAr?: string; name?: string; tax?: string; taxNumber?: string; crNumber?: string; logoBase64?: string; address?: string; addressAr?: string },
   title?: string,
 ): Promise<void> {
   const w = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;

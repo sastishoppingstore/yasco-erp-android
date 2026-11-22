@@ -1,10 +1,12 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { readFileSync, existsSync, createReadStream, statSync } from "node:fs";
 import { join, extname, normalize } from "node:path";
 import { initDb } from "./sqlite";
 import { serialize } from "./superjson";
 import { handlers, MUTATIONS, AUTH_REQUIRED, authMeHandler, ApiError, type RequestLike } from "./handlers";
 import { startSyncEngine, syncOnce } from "./sync";
+import { setRemoteCookies, clearRemoteCookies, remoteCookieHeader } from "./remote";
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 32145);
@@ -194,6 +196,155 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
   res.end("Not found");
 }
 
+// ── Live-backend proxy ───────────────────────────────────────────────
+// The bundled UI is served from loopback, but every `/api/*` call is forwarded
+// to the production Hono backend, so the desktop is a real client of the live
+// ERP (identical data and features to the web app). The first upstream points
+// straight at the origin server (SNI + Host = the real domain) which bypasses
+// Cloudflare, so the app keeps working from regions where the Cloudflare edge
+// blocks or challenges the domain. When no upstream answers, the request falls
+// back to the bundled offline SQLite backend below.
+const UPSTREAMS = (
+  process.env.ERP_REMOTE_URLS || "https://203.161.63.59#yasco.tech,https://yasco.tech"
+)
+  .split(",")
+  .map((entry) => entry.trim())
+  .filter(Boolean)
+  .map((entry) => {
+    const [origin, servername] = entry.split("#");
+    return { origin, servername: servername || null };
+  });
+
+const PROXY_TIMEOUT_MS = Number(process.env.ERP_PROXY_TIMEOUT_MS || 25000);
+
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", () => resolve(Buffer.concat(chunks)));
+  });
+}
+
+/** Loosen upstream cookies for the loopback http webview origin. */
+function relaxCookies(cookies: string[]): string[] {
+  return cookies.map((c) => c.replace(/;\s*SameSite=None/i, "; SameSite=Lax").replace(/;\s*Secure/i, ""));
+}
+
+/** Remember the live session cookie so the background sync engine can use it. */
+function captureRemoteSession(cookies: string[]): void {
+  try {
+    for (const c of cookies) {
+      const m = /^erp_sid=([^;]*)/.exec(c);
+      if (!m) continue;
+      if (m[1]) setRemoteCookies({ erp_sid: m[1] });
+      else clearRemoteCookies();
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function proxyOnce(
+  upstream: { origin: string; servername: string | null },
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: Buffer,
+  hasBody: boolean
+): Promise<"ok" | "fail"> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (r: "ok" | "fail") => {
+      if (!settled) {
+        settled = true;
+        resolve(r);
+      }
+    };
+
+    let url: URL;
+    try {
+      url = new URL(upstream.origin);
+    } catch {
+      return done("fail");
+    }
+
+    const isTls = url.protocol === "https:";
+    const headers: Record<string, string | string[]> = { ...(req.headers as Record<string, string | string[]>) };
+    // The upstream must see its own public host so cookies, ZATCA links and
+    // absolute URLs stay correct.
+    headers.host = upstream.servername || url.host;
+    delete headers["transfer-encoding"];
+    delete headers["content-length"];
+    if (hasBody) headers["content-length"] = String(body.length);
+    const cookieHeader = remoteCookieHeader(req.headers.cookie);
+    if (cookieHeader) headers.cookie = cookieHeader;
+    else delete headers.cookie;
+    headers["x-forwarded-proto"] = "https";
+
+    const send = isTls ? httpsRequest : httpRequest;
+    const proxyReq = send(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || (isTls ? 443 : 80),
+        method: req.method,
+        path: req.url,
+        headers,
+        servername: upstream.servername || undefined,
+        timeout: PROXY_TIMEOUT_MS,
+      } as Parameters<typeof httpsRequest>[0],
+      (proxyRes) => {
+        const outHeaders: Record<string, string | string[]> = { ...(proxyRes.headers as Record<string, string | string[]>) };
+        delete outHeaders["transfer-encoding"];
+        const sc = outHeaders["set-cookie"];
+        if (sc) {
+          const list = relaxCookies(Array.isArray(sc) ? sc : [sc]);
+          outHeaders["set-cookie"] = list;
+          captureRemoteSession(list);
+        }
+        res.writeHead(proxyRes.statusCode || 502, outHeaders);
+        proxyRes.pipe(res);
+        proxyRes.on("end", () => done("ok"));
+        proxyRes.on("error", () => {
+          try {
+            res.destroy();
+          } catch {
+            /* ignore */
+          }
+          done("ok");
+        });
+      }
+    );
+
+    proxyReq.on("timeout", () => proxyReq.destroy(new Error("upstream timeout")));
+    proxyReq.on("error", () => done("fail"));
+    req.on("error", () => {
+      try {
+        proxyReq.destroy();
+      } catch {
+        /* ignore */
+      }
+      done("fail");
+    });
+
+    if (hasBody) proxyReq.end(body);
+    else proxyReq.end();
+  });
+}
+
+/** Returns true when an upstream answered (response already streamed). */
+async function proxyToRemote(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  const method = (req.method || "GET").toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const body = hasBody ? await readRequestBody(req) : Buffer.alloc(0);
+
+  for (const upstream of UPSTREAMS) {
+    const result = await proxyOnce(upstream, req, res, body, hasBody);
+    if (result === "ok" || res.headersSent) return true;
+  }
+  return false;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const pathname = url.pathname;
@@ -204,12 +355,17 @@ const server = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true, ts: Date.now(), desktop: true }));
         return;
       }
+      // Prefer the live backend (full parity, real data). If no upstream is
+      // reachable, fall back to the bundled offline SQLite backend so the user
+      // can keep working and the changes sync up once the network returns.
+      const proxied = await proxyToRemote(req, res, url);
+      if (proxied) return;
       if (pathname.startsWith("/api/trpc")) {
         await handleTrpc(req, res, pathname, url.searchParams);
         return;
       }
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "Not found" }));
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "offline", offline: true }));
       return;
     }
     serveStatic(req, res, pathname);

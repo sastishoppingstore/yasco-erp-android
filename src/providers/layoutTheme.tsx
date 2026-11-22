@@ -1,5 +1,4 @@
 import { createContext, useContext, type ReactNode } from "react";
-import { trpc } from "./trpc";
 
 export type LayoutTheme = "sidebar" | "app_launcher" | "launcher_theme";
 
@@ -18,13 +17,9 @@ const LayoutThemeContext = createContext<LayoutThemeContextValue>({
 });
 
 export function LayoutThemeProvider({ children }: { children: ReactNode }) {
-  const { isLoading } = trpc.settings.themeGet.useQuery(undefined, {
-    retry: false,
-    staleTime: 1000 * 60 * 10,
-  });
-
-  // Single locked theme for every tenant: the extra themes are removed,
-  // so switching is a no-op and everyone stays on the launcher theme.
+  // Theme is locked to the launcher layout for every tenant, so there is no
+  // need to call the authenticated `settings.themeGet` endpoint here. Removing
+  // that call also stops an expected pre-login 401 on /login & /register.
   const setLayoutTheme = (_theme: LayoutTheme) => {};
 
   return (
@@ -33,7 +28,7 @@ export function LayoutThemeProvider({ children }: { children: ReactNode }) {
         layoutTheme: "launcher_theme",
         setLayoutTheme,
         isAppLauncher: true,
-        isLoading,
+        isLoading: false,
       }}
     >
       {children}

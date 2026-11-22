@@ -44,6 +44,12 @@ export default function BusinessHomeRedirect() {
     return <Navigate to="/app/decoration" replace />;
   }
 
+  /* Travel tenants land directly inside their travel module, so after login
+   * only travel is on screen — the construction / other modules never show. */
+  if (serverModules.includes("travel")) {
+    return <Navigate to="/app/verticals/travel/dashboard" replace />;
+  }
+
   return (
     <AppLayout>
       <Dashboard />
