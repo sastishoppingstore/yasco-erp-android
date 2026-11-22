@@ -1,8 +1,8 @@
 #[cfg(desktop)]
 use std::{
   fs::{self, OpenOptions},
-  io::Write,
-  net::{TcpStream, ToSocketAddrs},
+  io::{Read, Write},
+  net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream, ToSocketAddrs},
   path::Path,
   time::{Duration, Instant},
 };
@@ -120,6 +120,7 @@ fn start_local_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
   let static_dir = resource_dir.join("dist").join("public");
   let backend_log = std::env::temp_dir().join("erp-system-backend.log");
   let backend_port = "32145";
+  let backend_port_num: u16 = backend_port.parse().unwrap_or(32145);
 
   write_backend_log(
     &backend_log,
@@ -130,6 +131,11 @@ fn start_local_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
       static_dir.display(),
     ),
   );
+
+  // Self-heal: if a previous YASCO sidecar is still holding the loopback port
+  // (e.g. an in-place upgrade skipped node.exe, or a crashed instance left it
+  // behind), stop it so we never attach the UI to stale bundled code.
+  free_backend_port(backend_port_num, &backend_log);
 
   let (mut rx, child) = app
     .shell()
@@ -175,8 +181,70 @@ fn start_local_backend(app: &mut tauri::App) -> Result<(), Box<dyn std::error::E
   });
 
   app.manage(BackendChild(Some(child)));
-  wait_for_backend("127.0.0.1:32145", Duration::from_secs(15))?;
+  // Never hard-fail on a slow/failed sidecar start: still open the window so the
+  // user sees the app and it can recover, instead of the whole app exiting.
+  if let Err(err) = wait_for_backend(&format!("127.0.0.1:{backend_port}"), Duration::from_secs(20)) {
+    write_backend_log(&backend_log, &format!("[warn] {err}\n"));
+  }
   Ok(())
+}
+
+/// Returns true when the service on `port` answers `/api/health` with our
+/// desktop marker — i.e. it is a YASCO sidecar and safe to stop.
+#[cfg(desktop)]
+fn port_serves_our_sidecar(port: u16) -> bool {
+  let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+  let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(600)) {
+    Ok(stream) => stream,
+    Err(_) => return false,
+  };
+  let _ = stream.set_read_timeout(Some(Duration::from_millis(900)));
+  let _ = stream.set_write_timeout(Some(Duration::from_millis(600)));
+  let request =
+    format!("GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+  if stream.write_all(request.as_bytes()).is_err() {
+    return false;
+  }
+  let mut body = Vec::new();
+  let _ = stream.read_to_end(&mut body);
+  String::from_utf8_lossy(&body).contains("\"desktop\":true")
+}
+
+/// Best-effort stop of whatever is listening on `port` (Windows).
+#[cfg(all(desktop, windows))]
+fn kill_listeners_on_port(port: u16) {
+  let script = format!(
+    "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
+  );
+  let _ = std::process::Command::new("powershell")
+    .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script.as_str()])
+    .status();
+}
+
+#[cfg(all(desktop, not(windows)))]
+fn kill_listeners_on_port(_port: u16) {}
+
+/// If a stale YASCO sidecar still holds `port` (left behind by a crashed or
+/// upgraded instance), stop it and wait until the port is free, so the new
+/// sidecar binds and the UI is served by the freshly bundled code.
+#[cfg(desktop)]
+fn free_backend_port(port: u16, log_path: &Path) {
+  if !port_serves_our_sidecar(port) {
+    return;
+  }
+  write_backend_log(
+    log_path,
+    &format!("[warn] stale sidecar on port {port}; stopping it\n"),
+  );
+  kill_listeners_on_port(port);
+  let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port));
+  let deadline = Instant::now() + Duration::from_secs(6);
+  while Instant::now() < deadline {
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err() {
+      return;
+    }
+    std::thread::sleep(Duration::from_millis(200));
+  }
 }
 
 #[cfg(desktop)]
