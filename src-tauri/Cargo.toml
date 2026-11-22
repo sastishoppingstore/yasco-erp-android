@@ -29,7 +29,10 @@ tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
 
 # Desktop-only: POS printing, serial ports, hardware fingerprint.
-[target.'cfg(desktop)'.dependencies]
+# NOTE: dependency selection is resolved by cargo, which does not know the
+# custom `desktop` cfg flag that Tauri sets for code compilation. Gate these on
+# real target cfgs so they are actually pulled in on Windows/macOS/Linux.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 escpos = "0.4"
 machine-uid = "0.5"
 sysinfo = "0.33"
