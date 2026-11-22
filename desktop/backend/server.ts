@@ -217,6 +217,16 @@ const UPSTREAMS = (
 
 const PROXY_TIMEOUT_MS = Number(process.env.ERP_PROXY_TIMEOUT_MS || 25000);
 
+// A dead or black-holed upstream must never stall the UI. Cap the connect phase
+// to a few seconds; if nothing connects we move on to the next upstream (or the
+// bundled offline backend) instead of making the app look frozen.
+const PROXY_CONNECT_TIMEOUT_MS = Number(process.env.ERP_PROXY_CONNECT_TIMEOUT_MS || 4000);
+
+// Index of the upstream that last answered. Later requests try it first, so a
+// machine that cannot reach the primary (origin IP) only pays the connect
+// timeout once, not on every call.
+let preferredUpstreamIndex = 0;
+
 function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
@@ -291,9 +301,12 @@ function proxyOnce(
         path: req.url,
         headers,
         servername: upstream.servername || undefined,
-        timeout: PROXY_TIMEOUT_MS,
+        timeout: PROXY_CONNECT_TIMEOUT_MS,
       } as Parameters<typeof httpsRequest>[0],
       (proxyRes) => {
+        // Connected and receiving a response — allow the full (idle) budget from
+        // here on so a large or slow body is not cut short by the connect cap.
+        proxyReq.setTimeout(PROXY_TIMEOUT_MS);
         const outHeaders: Record<string, string | string[]> = { ...(proxyRes.headers as Record<string, string | string[]>) };
         delete outHeaders["transfer-encoding"];
         const sc = outHeaders["set-cookie"];
@@ -332,18 +345,98 @@ function proxyOnce(
   });
 }
 
+/** Probe one upstream with a short connect deadline; resolve true if it answers. */
+function probeUpstream(upstream: { origin: string; servername: string | null }): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: boolean) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+
+    let url: URL;
+    try {
+      url = new URL(upstream.origin);
+    } catch {
+      return done(false);
+    }
+
+    const isTls = url.protocol === "https:";
+    const send = isTls ? httpsRequest : httpRequest;
+    const probeReq = send(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || (isTls ? 443 : 80),
+        method: "GET",
+        path: "/api/health",
+        headers: { host: upstream.servername || url.host, "x-forwarded-proto": "https" },
+        servername: upstream.servername || undefined,
+        timeout: PROXY_CONNECT_TIMEOUT_MS,
+      } as Parameters<typeof httpsRequest>[0],
+      (probeRes) => {
+        // Any HTTP answer (even 404) means the upstream is reachable.
+        probeRes.resume();
+        done(true);
+      }
+    );
+
+    probeReq.on("timeout", () => probeReq.destroy(new Error("probe timeout")));
+    probeReq.on("error", () => done(false));
+    probeReq.end();
+  });
+}
+
+/**
+ * Pick the first upstream that actually answers and stick to it, so a machine
+ * that cannot reach the primary (the raw origin IP) does not pay the connect
+ * timeout on every single request. Runs once at startup; if nothing answers we
+ * leave the default order and each request simply falls back to the bundled
+ * offline backend.
+ */
+async function probeUpstreams(): Promise<void> {
+  // Probe all upstreams concurrently (each bounded by the connect timeout) and
+  // prefer the earliest in order that answered.
+  const results = await Promise.all(UPSTREAMS.map((u) => probeUpstream(u)));
+  const firstOk = results.findIndex(Boolean);
+  if (firstOk >= 0) {
+    preferredUpstreamIndex = firstOk;
+    console.log(`[desktop] upstream ready: ${UPSTREAMS[firstOk].origin}`);
+    return;
+  }
+  console.log("[desktop] no upstream reachable at startup; using bundled offline backend");
+}
+
 /** Returns true when an upstream answered (response already streamed). */
 async function proxyToRemote(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
   const method = (req.method || "GET").toUpperCase();
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await readRequestBody(req) : Buffer.alloc(0);
 
-  for (const upstream of UPSTREAMS) {
+  // Wait for the startup reachability probe (bounded) so the first call already
+  // starts from the working upstream instead of paying a dead-upstream timeout.
+  await upstreamReady;
+
+  const count = UPSTREAMS.length;
+  for (let n = 0; n < count; n++) {
+    const idx = (preferredUpstreamIndex + n) % count;
+    const upstream = UPSTREAMS[idx];
     const result = await proxyOnce(upstream, req, res, body, hasBody);
-    if (result === "ok" || res.headersSent) return true;
+    if (result === "ok" || res.headersSent) {
+      // Remember the winner so subsequent calls start here.
+      preferredUpstreamIndex = idx;
+      return true;
+    }
   }
   return false;
 }
+
+// Choose a reachable upstream before the UI starts hammering the API. This runs
+// in the background; the first API calls simply await it, so a black-holed
+// primary upstream costs one short probe (not a 25 s stall per request).
+const upstreamReady = probeUpstreams().catch(() => {});
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -355,6 +448,8 @@ const server = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true, ts: Date.now(), desktop: true }));
         return;
       }
+      // Wait for the upstream probe so we never start with a dead upstream.
+      await upstreamReady;
       // Prefer the live backend (full parity, real data). If no upstream is
       // reachable, fall back to the bundled offline SQLite backend so the user
       // can keep working and the changes sync up once the network returns.
