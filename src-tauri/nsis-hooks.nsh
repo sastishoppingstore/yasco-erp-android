@@ -25,6 +25,11 @@
   ; Node apps the user may have open).
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 32145 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }"'
   Pop $0
+  ; Belt-and-braces: some older builds listened on a dynamic port, so the socket
+  ; check above would miss them. Stop any node.exe whose executable lives inside
+  ; this app's install folder (that is only ever our bundled sidecar).
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "Get-Process -Name node -ErrorAction SilentlyContinue | Where-Object { $$_.Path -like $\"*YASCO ERP\node.exe$\" } | Stop-Process -Force -ErrorAction SilentlyContinue"'
+  Pop $0
   Sleep 1200
 !macroend
 
