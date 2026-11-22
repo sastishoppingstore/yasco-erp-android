@@ -120,13 +120,16 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H 203.161.63.59 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H 203.161.63.59 >> ~/.ssh/known_hosts 2>/dev/null || true
+          SSH="ssh -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=30 root@203.161.63.59"
           EXE=$(ls src-tauri/target/release/bundle/nsis/*.exe | head -1)
           echo "Uploading $EXE"
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "$EXE" root@203.161.63.59:/var/www/YASCO-ERP.exe
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@203.161.63.59 'ls -la /var/www/YASCO-ERP.exe'
+          # Stream over SSH: `scp` on the Windows runner defaults to SFTP, which
+          # this server does not expose ("Connection closed").
+          $SSH "cat > /var/www/YASCO-ERP.exe.tmp" < "$EXE"
+          $SSH "mv -f /var/www/YASCO-ERP.exe.tmp /var/www/YASCO-ERP.exe && ls -la /var/www/YASCO-ERP.exe"
           LOCAL=$(sha256sum "$EXE" | cut -d' ' -f1)
-          REMOTE=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@203.161.63.59 'sha256sum /var/www/YASCO-ERP.exe' | cut -d' ' -f1)
+          REMOTE=$($SSH "sha256sum /var/www/YASCO-ERP.exe" | cut -d' ' -f1)
           [ "$LOCAL" = "$REMOTE" ] || { echo "::error::published installer differs (truncated upload?)"; exit 1; }
           echo "Published https://yasco.tech/YASCO-ERP.exe (sha256 $LOCAL)"
 
