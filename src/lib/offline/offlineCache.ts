@@ -19,6 +19,14 @@ interface CachedResponse {
 
 const MAX_ENTRIES = 600;
 
+/**
+ * Hard ceiling for a single tRPC request. The bundled proxy already fast-fails
+ * dead upstreams, but the UI must still never be able to hang forever if the
+ * sidecar itself wedges — after this the request aborts and the offline cache /
+ * queue (or a real error) takes over, so `isLoading` always resolves.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 class OfflineCacheDb extends Dexie {
   responses!: Table<CachedResponse, string>;
 
@@ -164,11 +172,24 @@ export function createOfflineFetch(isQuery: boolean) {
           : input.url;
     const body = typeof init?.body === "string" ? init.body : "";
 
-    const doFetch = () =>
-      globalThis.fetch(input, {
-        ...(init ?? {}),
-        credentials: "include",
-      });
+    const doFetch = () => {
+      // Abort after a hard deadline (and honour any caller-provided signal) so a
+      // wedged request can never leave the app spinning forever.
+      const controller = new AbortController();
+      const external = init?.signal ?? null;
+      if (external) {
+        if (external.aborted) controller.abort();
+        else external.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      return globalThis
+        .fetch(input, {
+          ...(init ?? {}),
+          credentials: "include",
+          signal: controller.signal,
+        })
+        .finally(() => clearTimeout(timer));
+    };
 
     try {
       const response = await doFetch();

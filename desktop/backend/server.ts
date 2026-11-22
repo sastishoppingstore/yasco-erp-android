@@ -227,6 +227,35 @@ const PROXY_CONNECT_TIMEOUT_MS = Number(process.env.ERP_PROXY_CONNECT_TIMEOUT_MS
 // timeout once, not on every call.
 let preferredUpstreamIndex = 0;
 
+/**
+ * Resolve to `fallback` if `p` has not settled within `ms`.
+ *
+ * A socket `timeout` does NOT bound a DNS lookup: if the resolver black-holes
+ * the query, no socket is ever created and no `timeout`/`error` event fires.
+ * Without this ceiling the startup probe could stay pending forever, and since
+ * every `/api/*` call awaits it the whole UI would hang on the splash.
+ */
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    p.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      }
+    );
+  });
+}
+
+/** One-line diagnostics (captured into %TEMP%\erp-system-backend.log). */
+function logDebug(message: string): void {
+  console.log(`[desktop ${new Date().toISOString()}] ${message}`);
+}
+
 function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
@@ -264,9 +293,11 @@ function proxyOnce(
 ): Promise<"ok" | "fail"> {
   return new Promise((resolve) => {
     let settled = false;
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
     const done = (r: "ok" | "fail") => {
       if (!settled) {
         settled = true;
+        if (hardTimer) clearTimeout(hardTimer);
         resolve(r);
       }
     };
@@ -329,8 +360,23 @@ function proxyOnce(
       }
     );
 
+    // Absolute ceiling for this attempt. Connect + response-idle timeouts are
+    // enough for a healthy socket, but a DNS lookup (or a wedged socket) can
+    // pass without either firing, so bound the whole attempt too.
+    hardTimer = setTimeout(() => {
+      try {
+        proxyReq.destroy(new Error("proxy hard deadline"));
+      } catch {
+        /* ignore */
+      }
+      done("fail");
+    }, PROXY_CONNECT_TIMEOUT_MS + PROXY_TIMEOUT_MS + 2000);
+
     proxyReq.on("timeout", () => proxyReq.destroy(new Error("upstream timeout")));
-    proxyReq.on("error", () => done("fail"));
+    proxyReq.on("error", (err) => {
+      logDebug(`proxy error ${upstream.origin} ${req.method} ${req.url?.slice(0, 60)}: ${(err as Error).message}`);
+      done("fail");
+    });
     req.on("error", () => {
       try {
         proxyReq.destroy();
@@ -398,15 +444,21 @@ function probeUpstream(upstream: { origin: string; servername: string | null }):
  */
 async function probeUpstreams(): Promise<void> {
   // Probe all upstreams concurrently (each bounded by the connect timeout) and
-  // prefer the earliest in order that answered.
-  const results = await Promise.all(UPSTREAMS.map((u) => probeUpstream(u)));
+  // prefer the earliest in order that answered. The extra deadline covers DNS
+  // lookups, which a socket timeout does not bound, so this always resolves.
+  const probeBudget = PROXY_CONNECT_TIMEOUT_MS + 1500;
+  const results = await withDeadline(
+    Promise.all(UPSTREAMS.map((u) => withDeadline(probeUpstream(u), probeBudget, false))),
+    probeBudget + 1500,
+    UPSTREAMS.map(() => false)
+  );
   const firstOk = results.findIndex(Boolean);
   if (firstOk >= 0) {
     preferredUpstreamIndex = firstOk;
-    console.log(`[desktop] upstream ready: ${UPSTREAMS[firstOk].origin}`);
+    logDebug(`upstream ready: ${UPSTREAMS[firstOk].origin}`);
     return;
   }
-  console.log("[desktop] no upstream reachable at startup; using bundled offline backend");
+  logDebug("no upstream reachable at startup; using bundled offline backend");
 }
 
 /** Returns true when an upstream answered (response already streamed). */
@@ -437,6 +489,7 @@ const upstreamReady = probeUpstreams().catch(() => {});
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   const pathname = url.pathname;
+  const started = Date.now();
   try {
     if (pathname.startsWith("/api/")) {
       if (pathname === "/api/health" || pathname === "/api/ping") {
@@ -444,19 +497,25 @@ const server = createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: true, ts: Date.now(), desktop: true }));
         return;
       }
-      // Wait for the upstream probe so we never start with a dead upstream.
-      await upstreamReady;
+      // Wait for the upstream probe so we never start with a dead upstream — but
+      // never longer than a bounded budget, so a wedged probe cannot stall the UI.
+      await withDeadline(upstreamReady, PROXY_CONNECT_TIMEOUT_MS + 3000, undefined);
       // Prefer the live backend (full parity, real data). If no upstream is
       // reachable, fall back to the bundled offline SQLite backend so the user
       // can keep working and the changes sync up once the network returns.
       const proxied = await proxyToRemote(req, res, url);
-      if (proxied) return;
+      if (proxied) {
+        logDebug(`${req.method} ${pathname} -> remote ${res.statusCode} ${Date.now() - started}ms`);
+        return;
+      }
       if (pathname.startsWith("/api/trpc")) {
         await handleTrpc(req, res, pathname, url.searchParams);
+        logDebug(`${req.method} ${pathname} -> offline ${res.statusCode} ${Date.now() - started}ms`);
         return;
       }
       res.writeHead(503, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "offline", offline: true }));
+      logDebug(`${req.method} ${pathname} -> 503 offline ${Date.now() - started}ms`);
       return;
     }
     serveStatic(req, res, pathname);
@@ -474,7 +533,7 @@ server.listen(PORT, HOST, () => {
   console.log(`[desktop] YASCO desktop backend listening on http://${HOST}:${PORT}`);
   console.log(`[desktop] DB: ${DB_PATH}`);
   console.log(`[desktop] Static: ${STATIC_DIR}`);
-  console.log(`[desktop] Remote: ${process.env.ERP_REMOTE_URL || "https://www.yasco.tech"}`);
+  console.log(`[desktop] Remote upstreams: ${UPSTREAMS.map((u) => u.origin).join(", ")}`);
   syncOnce().catch(() => {});
 });
 

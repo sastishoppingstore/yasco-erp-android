@@ -827,7 +827,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [searchOpen, setSearchOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout, isLoading } = useAuth({ redirectOnUnauthenticated: true });
+  const { user, logout, isLoading, refresh } = useAuth({ redirectOnUnauthenticated: true });
   const { language, setLang, dir } = useLanguage();
   const countryDetection = useCountryDetection();
   const rtl = language === "ar";
@@ -847,6 +847,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener("keydown", down);
   }, []);
 
+  // Bound the "Checking secure session" splash: if the session check cannot
+  // finish promptly (e.g. the local sidecar is wedged), offer retry / sign-in
+  // instead of hanging forever.
+  const [sessionTimedOut, setSessionTimedOut] = useState(false);
+  useEffect(() => {
+    if (!(isLoading && !user)) {
+      setSessionTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setSessionTimedOut(true), 10_000);
+    return () => clearTimeout(timer);
+  }, [isLoading, user]);
+
   // Breadcrumb: find active item label
   const allNavItems = menuGroups.flatMap(g => g.items);
   const activeItem = allNavItems.find(i => location.pathname === i.path || location.pathname.startsWith(i.path + "/"));
@@ -858,11 +871,35 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     : (cmdServerPrefixes ?? getEnabledSidebarPathPrefixes(getStoredCategory()));
 
   if (isLoading && !user) {
+    if (!sessionTimedOut) {
+      return (
+        <div className="flex h-screen items-center justify-center bg-slate-50">
+          <div className="text-center space-y-3">
+            <img src="/logo-40.png" alt="YASCO" className="w-10 h-10 rounded-lg object-contain mx-auto" />
+            <p className="text-sm text-slate-500">Checking secure session...</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
         <div className="text-center space-y-3">
           <img src="/logo-40.png" alt="YASCO" className="w-10 h-10 rounded-lg object-contain mx-auto" />
-          <p className="text-sm text-slate-500">Checking secure session...</p>
+          <p className="text-sm text-slate-500">Still verifying your session…</p>
+          <div className="flex items-center justify-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void refresh();
+              }}
+            >
+              Retry
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => navigate("/login")}>
+              Sign in again
+            </Button>
+          </div>
         </div>
       </div>
     );
