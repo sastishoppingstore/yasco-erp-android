@@ -415,10 +415,6 @@ async function proxyToRemote(req: IncomingMessage, res: ServerResponse, url: URL
   const hasBody = method !== "GET" && method !== "HEAD";
   const body = hasBody ? await readRequestBody(req) : Buffer.alloc(0);
 
-  // Wait for the startup reachability probe (bounded) so the first call already
-  // starts from the working upstream instead of paying a dead-upstream timeout.
-  await upstreamReady;
-
   const count = UPSTREAMS.length;
   for (let n = 0; n < count; n++) {
     const idx = (preferredUpstreamIndex + n) % count;
