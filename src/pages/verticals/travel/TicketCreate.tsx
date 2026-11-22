@@ -5,6 +5,8 @@ import { useLanguage } from "@/providers/language";
 import { Plane, Plus, Trash2, Save, Printer, Users, FileText, ShieldCheck, Search, History, X } from "lucide-react";
 import { calcTravelLine, computeTravelTotals, fmtNum, type PricingMode, type VatMode } from "@/lib/travelCalc";
 import { printTravelTicket } from "@/lib/travelPrint";
+import { exportTravelExcel } from "@/lib/travelExcel";
+import type { TravelOutputFormat } from "@/lib/travelDocModel";
 
 /* ─────────────────────────────────────────────────────────────────────────
    Sahl-style dense ERP primitives (local to the Travel module — the Sahl
@@ -139,6 +141,7 @@ export default function TravelTicketCreate() {
   const [savedId, setSavedId] = useState<number | null>(null);
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const effectiveVat = mode === "zatca" ? 15 : (nonTaxKind === "custom" ? vatPercent : Number(nonTaxKind));
   const isMargin = pricingMode === "margin";
@@ -228,10 +231,26 @@ export default function TravelTicketCreate() {
     }
   }
 
-  async function printSaved() {
-    if (!savedId) return;
-    const detail = await utils.travel.ticketGet.fetch({ id: savedId });
-    await printTravelTicket(detail as any);
+  async function withSavedDetail(fn: (detail: any) => Promise<void> | void) {
+    if (!savedId || exporting) return;
+    setErr(null);
+    setExporting(true);
+    try {
+      const detail = await utils.travel.ticketGet.fetch({ id: savedId });
+      await fn(detail as any);
+    } catch (e: any) {
+      setErr(e?.message || String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  /** 4 clean outputs: print A4 / print thermal / Excel A4 / Excel thermal. */
+  function printSaved(format: TravelOutputFormat = "a4") {
+    return withSavedDetail((detail) => printTravelTicket(detail, format));
+  }
+  function excelSaved(format: TravelOutputFormat = "a4") {
+    return withSavedDetail((detail) => exportTravelExcel(detail, format));
   }
 
   function resetForm() {
@@ -260,9 +279,20 @@ export default function TravelTicketCreate() {
             <History className="size-3.5" />{T("History", "السجل")}
           </button>
           {savedId && (
-            <button type="button" className={`${btnCls} flex items-center gap-1`} onClick={printSaved}>
-              <Printer className="size-3.5" />{T("Print", "طباعة")}
-            </button>
+            <>
+              <button type="button" className={`${btnCls} flex items-center gap-1`} onClick={() => printSaved("a4")} disabled={exporting}>
+                <Printer className="size-3.5" />{T("PDF/Print A4", "طباعة A4")}
+              </button>
+              <button type="button" className={`${btnCls} flex items-center gap-1`} onClick={() => printSaved("thermal")} disabled={exporting}>
+                <Printer className="size-3.5" />{T("Thermal 80mm", "حراري 80مم")}
+              </button>
+              <button type="button" className={`${btnCls} flex items-center gap-1`} onClick={() => excelSaved("a4")} disabled={exporting}>
+                <FileText className="size-3.5" />{T("Excel A4", "إكسل A4")}
+              </button>
+              <button type="button" className={`${btnCls} flex items-center gap-1`} onClick={() => excelSaved("thermal")} disabled={exporting}>
+                <FileText className="size-3.5" />{T("Excel Thermal", "إكسل حراري")}
+              </button>
+            </>
           )}
           <button type="button" className={`${btnCls} flex items-center gap-1`} onClick={save} disabled={!canSave || create.isPending}
             style={{ background: "#fff", borderColor: "#0a5c2a", color: "#0a5c2a", fontWeight: 700 }}>
@@ -274,7 +304,12 @@ export default function TravelTicketCreate() {
       {msg && (
         <div className="flex items-center justify-between gap-3 border-b border-emerald-300 bg-emerald-50 px-3 py-1.5 text-emerald-800">
           <span>{msg}</span>
-          <button type="button" className={btnCls} onClick={printSaved}><Printer className="inline size-3.5 me-1" />{T("Print", "طباعة")}</button>
+          <span className="flex items-center gap-1">
+            <button type="button" className={btnCls} onClick={() => printSaved("a4")} disabled={exporting}><Printer className="inline size-3.5 me-1" />{T("Print A4", "طباعة A4")}</button>
+            <button type="button" className={btnCls} onClick={() => printSaved("thermal")} disabled={exporting}><Printer className="inline size-3.5 me-1" />{T("Thermal", "حراري")}</button>
+            <button type="button" className={btnCls} onClick={() => excelSaved("a4")} disabled={exporting}><FileText className="inline size-3.5 me-1" />{T("Excel A4", "إكسل A4")}</button>
+            <button type="button" className={btnCls} onClick={() => excelSaved("thermal")} disabled={exporting}><FileText className="inline size-3.5 me-1" />{T("Excel Thermal", "إكسل حراري")}</button>
+          </span>
         </div>
       )}
       {err && <div className="border-b border-red-300 bg-red-50 px-3 py-1.5 text-red-700">{err}</div>}
@@ -488,7 +523,7 @@ export default function TravelTicketCreate() {
           <FuncKey k="F2" label={T("Save", "حفظ")} color={GREEN} icon={Save} onClick={save} disabled={!canSave || create.isPending} />
           <FuncKey k="F4" label={T("New", "جديد")} icon={FileText} onClick={resetForm} />
           <FuncKey k="F3" label={T("History", "السجل")} icon={History} onClick={() => navigate("/app/verticals/travel/tickets")} />
-          <FuncKey k="F9" label={T("Print", "طباعة")} color="#1b9bd7" icon={Printer} onClick={printSaved} disabled={!savedId} />
+          <FuncKey k="F9" label={T("Print A4", "طباعة A4")} color="#1b9bd7" icon={Printer} onClick={() => printSaved("a4")} disabled={!savedId || exporting} />
           <FuncKey k="Esc" label={T("Exit", "خروج")} color="#b71c1c" icon={X} onClick={() => navigate("/app/verticals/travel/dashboard")} />
         </div>
 
