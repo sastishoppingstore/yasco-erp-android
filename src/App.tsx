@@ -493,6 +493,8 @@ const TravelVisas = lazy(() => import("./pages/verticals/travel/Visas"));
 const TravelHotels = lazy(() => import("./pages/verticals/travel/Hotels"));
 const TravelSettings = lazy(() => import("./pages/verticals/travel/Settings"));
 const TravelMarginReport = lazy(() => import("./pages/verticals/travel/MarginReport"));
+// Full-screen shell for the Travel module (hides the global header/sidebar).
+const TravelLayout = lazy(() => import("./pages/verticals/travel/TravelLayout"));
 const ModuleGate = lazy(() => import("./components/ModuleGate"));
 const AviationFlights = lazy(() => import("./pages/verticals/aviation/Flights"));
 const AviationCrew = lazy(() => import("./pages/verticals/aviation/Crew"));
@@ -917,20 +919,20 @@ export default function App() {
       <Route path="/app/verticals/real-estate/tenants" element={<LayoutWrapper><RealEstateTenants /></LayoutWrapper>} />
 
       {/* Travel Verticals */}
-      <Route path="/app/verticals/travel" element={<LayoutWrapper><ModuleGate module="travel"><TravelBookings /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/bookings" element={<LayoutWrapper><ModuleGate module="travel"><TravelBookings /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/suppliers" element={<LayoutWrapper><ModuleGate module="travel"><TravelSuppliers /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/itineraries" element={<LayoutWrapper><ModuleGate module="travel"><TravelItineraries /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/reconciliation" element={<LayoutWrapper><ModuleGate module="travel"><TravelReconciliation /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/dashboard" element={<LayoutWrapper><ModuleGate module="travel"><TravelDashboard /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/tickets" element={<LayoutWrapper><ModuleGate module="travel"><TravelTickets /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/tickets/new" element={<LayoutWrapper><ModuleGate module="travel"><TravelTicketCreate /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/passengers" element={<LayoutWrapper><ModuleGate module="travel"><TravelPassengers /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/packages" element={<LayoutWrapper><ModuleGate module="travel"><TravelPackages /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/visas" element={<LayoutWrapper><ModuleGate module="travel"><TravelVisas /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/hotels" element={<LayoutWrapper><ModuleGate module="travel"><TravelHotels /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/settings" element={<LayoutWrapper><ModuleGate module="travel"><TravelSettings /></ModuleGate></LayoutWrapper>} />
-      <Route path="/app/verticals/travel/margin-report" element={<LayoutWrapper><ModuleGate module="travel"><TravelMarginReport /></ModuleGate></LayoutWrapper>} />
+      <Route path="/app/verticals/travel" element={<TravelLayout><ModuleGate module="travel"><TravelBookings /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/bookings" element={<TravelLayout><ModuleGate module="travel"><TravelBookings /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/suppliers" element={<TravelLayout><ModuleGate module="travel"><TravelSuppliers /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/itineraries" element={<TravelLayout><ModuleGate module="travel"><TravelItineraries /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/reconciliation" element={<TravelLayout><ModuleGate module="travel"><TravelReconciliation /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/dashboard" element={<TravelLayout><ModuleGate module="travel"><TravelDashboard /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/tickets" element={<TravelLayout><ModuleGate module="travel"><TravelTickets /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/tickets/new" element={<TravelLayout><ModuleGate module="travel"><TravelTicketCreate /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/passengers" element={<TravelLayout><ModuleGate module="travel"><TravelPassengers /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/packages" element={<TravelLayout><ModuleGate module="travel"><TravelPackages /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/visas" element={<TravelLayout><ModuleGate module="travel"><TravelVisas /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/hotels" element={<TravelLayout><ModuleGate module="travel"><TravelHotels /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/settings" element={<TravelLayout><ModuleGate module="travel"><TravelSettings /></ModuleGate></TravelLayout>} />
+      <Route path="/app/verticals/travel/margin-report" element={<TravelLayout><ModuleGate module="travel"><TravelMarginReport /></ModuleGate></TravelLayout>} />
 
       {/* Aviation Verticals */}
       <Route path="/app/verticals/aviation" element={<LayoutWrapper><AviationFlights /></LayoutWrapper>} />

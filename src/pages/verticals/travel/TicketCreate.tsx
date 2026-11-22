@@ -135,7 +135,7 @@ export default function TravelTicketCreate() {
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
   const [passengerName, setPassengerName] = useState("");
-  const [rows, setRows] = useState<Row[]>([{ ...newRow(), description: "JED-MCT-BOM" }]);
+  const [rows, setRows] = useState<Row[]>([newRow()]);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<number | null>(null);
@@ -254,7 +254,7 @@ export default function TravelTicketCreate() {
   }
 
   function resetForm() {
-    setRows([{ ...newRow(), description: "JED-MCT-BOM" }]);
+    setRows([newRow()]);
     setCustomerId(null); setCustomerName(""); setCustomerNameAr(""); setCustomerPhone(""); setCustomerVat("");
     setPassengerName(""); setServiceRef(""); setPnr(""); setTicketNumber(""); setOrigin(""); setDestination("");
     setPaidAmount(""); setNotes(""); setSavedId(null); setMsg(null); setErr(null);
@@ -487,15 +487,15 @@ export default function TravelTicketCreate() {
                   <tr key={i} className="align-top hover:bg-[#f1f8e9]">
                     <td className="border border-[#ccc] px-1 py-1 text-center tabular-nums">{i + 1}</td>
                     <td className="border border-[#ccc] px-1 py-1">
-                      <input className={inputCls} value={r.description} onChange={(e) => setRow(i, { description: e.target.value })} placeholder="JED-MCT-BOM" />
+                      <input className={inputCls} value={r.description} onChange={(e) => setRow(i, { description: e.target.value })} placeholder={T("Item / description", "الوصف / المنتج")} />
                       <input dir="rtl" className={`${inputCls} mt-1`} value={r.descriptionAr} onChange={(e) => setRow(i, { descriptionAr: e.target.value })} placeholder="الوصف بالعربية" />
                     </td>
                     <td className="border border-[#ccc] px-1 py-1"><input className={inputCls} value={r.ticketRef} onChange={(e) => setRow(i, { ticketRef: e.target.value })} /></td>
                     <td className="border border-[#ccc] px-1 py-1"><input type="number" min={1} className={`${inputCls} w-16`} value={r.quantity} onChange={(e) => setRow(i, { quantity: Math.max(1, Number(e.target.value) || 1) })} /></td>
                     {isMargin ? (
                       <>
-                        <td className="border border-[#ccc] px-1 py-1"><input type="number" className={`${inputCls} w-24`} value={r.baseFare} onChange={(e) => setRow(i, { baseFare: e.target.value })} placeholder="1500" title={T("Non-taxable net ticket cost", "سعر التكلفة / التذكرة الأساسية")} /></td>
-                        <td className="border border-[#ccc] px-1 py-1"><input type="number" className={`${inputCls} w-24`} value={r.salePrice} onChange={(e) => setRow(i, { salePrice: e.target.value })} placeholder="1550" title={T("Customer sale price (base + profit)", "سعر البيع للعميل")} /></td>
+                        <td className="border border-[#ccc] px-1 py-1"><input type="number" className={`${inputCls} w-24`} value={r.baseFare} onChange={(e) => setRow(i, { baseFare: e.target.value })} placeholder="0.00" title={T("Non-taxable net ticket cost", "سعر التكلفة / التذكرة الأساسية")} /></td>
+                        <td className="border border-[#ccc] px-1 py-1"><input type="number" className={`${inputCls} w-24`} value={r.salePrice} onChange={(e) => setRow(i, { salePrice: e.target.value })} placeholder="0.00" title={T("Customer sale price (base + profit)", "سعر البيع للعميل")} /></td>
                         <td className="border border-[#ccc] px-1 py-1 text-end tabular-nums" style={{ color: "#0a5c2a", fontWeight: 700 }}>{(c?.margin ?? profitOf(r)).toFixed(2)}</td>
                       </>
                     ) : (

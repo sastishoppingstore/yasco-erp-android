@@ -1,9 +1,15 @@
 // Travel & Tours — printable ticket / tax-invoice HTML (A4 + 80mm thermal).
 //
-// Reproduces the bilingual (EN/AR) "Dazzling Travel & Tours" layout for A4 and
-// a compact 80mm POS thermal slip. Two modes:
-//   • mode "zatca"   → "Simplified Tax Invoice", ZATCA TLV QR shown.
-//   • mode "non_tax" → "Invoice" / "فاتورة"; QR hidden at 0% VAT.
+// A4 layout reproduces the client-approved "Dazzling Travel & Tours" reference:
+// a strict 3-column header table (so the agency block can never drop below the
+// title), the bilingual item table, the ZATCA QR / Non-Tax remarks block and
+// the right-aligned totals table.
+//
+// Two modes:
+//   • mode "zatca"   → "Simplified Tax Invoice", ZATCA TLV QR shown, VAT block shown.
+//   • mode "non_tax" → "Invoice" / "فاتورة"; the whole `.zatca-only` block
+//     (VAT number, QR, e-invoicing note) is hidden and a Non-Tax remarks +
+//     signature block is shown instead.
 //
 // PRIVACY: the customer-facing HTML never renders the internal base cost
 // (supplier/airline fare) or the agency profit as separate figures. Only the
@@ -25,180 +31,205 @@ function subline(it: TravelDocLine): string {
 export function buildTravelA4Html(p: TravelDocModel): string {
   const isZatca = p.isZatca;
   const sym = p.symbol;
+  const bodyClass = isZatca ? "zatca" : "non-tax";
+  const titleEn = isZatca ? "Simplified Tax Invoice" : "Invoice";
+  const titleAr = isZatca ? "فاتورة ضريبية مبسطة" : "فاتورة";
 
   const rows = p.items.map((it) => `<tr>
-      <td class="c-item">
-        <div class="desc-en">${esc(it.description)}</div>
-        ${it.descriptionAr ? `<div class="desc-ar" dir="rtl">${esc(it.descriptionAr)}</div>` : ""}
-        ${subline(it)}
-      </td>
-      <td class="c-num">${esc(it.quantity)}</td>
-      <td class="c-num">${money(it.unitPrice)}</td>
-      <td class="c-num">${money(it.taxableAmount)}</td>
-      <td class="c-num">${money(it.taxAmount)}</td>
-      <td class="c-num b">${money(it.totalAmount)}</td>
-    </tr>`).join("");
+        <td>${esc(it.description)}${it.descriptionAr ? `<span class="ar" dir="rtl">${esc(it.descriptionAr)}</span>` : ""}${subline(it)}</td>
+        <td>${esc(it.quantity)}</td>
+        <td>${money(it.unitPrice)}</td>
+        <td>${money(it.taxableAmount)}</td>
+        <td>${money(it.taxAmount)}</td>
+        <td>${money(it.totalAmount)}</td>
+      </tr>`).join("\n");
 
-  const qrBlock = isZatca
-    ? `<div class="qr-wrap">
-         ${p.qrDataUrl ? `<img class="qr" src="${p.qrDataUrl}" alt="ZATCA QR" />` : `<div class="qr qr-empty">QR</div>`}
-         <div class="qr-note">
-           <div>This QR code is encoded as per ZATCA e-invoicing requirements</div>
-           <div class="ar" dir="rtl">رمز الاستجابة السريعة مشفر بحسب متطلبات هيئة الزكاة والضريبة والجمارك للفوترة الإلكترونية</div>
-         </div>
-       </div>`
-    : `<div class="nontax-box">
-         <div class="nontax-title">Non-Tax Invoice / فاتورة غير ضريبية</div>
-         <div class="nontax-remarks">${esc(p.notes || "This invoice is issued without VAT.")}</div>
-         <div class="sign-row">
-           <div class="sign-line"><span>Authorized Signature / التوقيع المعتمد</span></div>
-           <div class="stamp">${p.stampUrl ? `<img src="${p.stampUrl}" alt="stamp" />` : `<span>Stamp / الختم</span>`}</div>
-         </div>
-       </div>`;
+  const nonTaxBlock = `<div class="non-tax-only">
+          <div class="nontax-title">Non-Tax Invoice / <span class="ar">فاتورة غير ضريبية</span></div>
+          <div class="nontax-remark">${esc(p.notes || "This invoice is issued without VAT.")}</div>
+          <div class="sign-row">
+            <div class="sign-line">Authorized Signature / <span class="ar">التوقيع المعتمد</span></div>
+            <div class="stamp">${p.stampUrl ? `<img src="${p.stampUrl}" alt="stamp" />` : "Stamp / <span class=\"ar\">الختم</span>"}</div>
+          </div>
+        </div>`;
 
-  const vatLine = isZatca
-    ? `<div class="kv"><span>VAT No. / رقم التسجيل الضريبي</span><b>${esc(p.brand.vat || "")}</b></div>`
-    : "";
-  const licenseLine = p.brand.licenseNo
-    ? `<div class="kv"><span>رقم ترخيص وزارة السياحة</span><b>${esc(p.brand.licenseNo)} ${esc(p.brand.licenseTypeAr || "")}</b></div>`
-    : "";
-  const phoneLine = p.brand.phone
-    ? `<div class="kv"><span>هاتف :</span><b dir="ltr">${esc(p.brand.phone)}</b></div>`
-    : "";
-
-  return `<!doctype html>
-<html lang="en" dir="ltr">
+  return `<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="utf-8" />
-<title>${esc(p.invoiceNumber || p.brand.name)}</title>
-<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet" />
-<style>
-  @page { size: A4; margin: 10mm; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; }
-  body { font-family: 'Cairo','Segoe UI',Tahoma,Arial,sans-serif; color: #1f2937; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .sheet { width: 190mm; margin: 0 auto; padding: 2mm; background: #fff; }
-  .ar { font-family: 'Cairo',Tahoma,Arial,sans-serif; }
+  <meta charset="UTF-8" />
+  <title>${esc(titleEn)} - A4</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800&family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    @page { size: A4 portrait; margin: 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', 'Cairo', sans-serif; color: #0f172a; background: #fff; font-size: 13px; }
+    .ar { font-family: 'Cairo', sans-serif; display: block; line-height: 1.35; }
+    .desc-sub { font-family: 'Inter', sans-serif; font-size: 11px; color: #2563eb; display: block; }
 
-  /* header — a 3-column table keeps the agency block pinned to the top-right */
-  table.head { width: 100%; border-collapse: collapse; border-bottom: 2px solid #111827; }
-  table.head > tbody > tr > td { vertical-align: top; padding: 0 4px 8px; }
-  .col-left { width: 32%; text-align: left; }
-  .col-mid  { width: 30%; }
-  .col-right{ width: 38%; text-align: right; }
-  .doc-title { font-size: 17px; font-weight: 800; color: #0f172a; }
-  .doc-title-ar { font-size: 15px; font-weight: 700; color: #334155; margin-bottom: 14px; }
-  .bill-label { font-size: 12px; color: #64748b; }
-  .bill-label .ar { display:block; }
-  .bill-name { font-size: 15px; font-weight: 800; text-transform: uppercase; }
-  .meta-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 6px; }
-  .meta-row .k { color: #475569; text-align: left; }
-  .meta-row .k .ar { display:block; color:#94a3b8; }
-  .meta-row b { color: #0f172a; }
-  .brand-logo { max-height: 62px; max-width: 165px; object-fit: contain; }
-  .brand-name { font-size: 15px; font-weight: 800; margin-top: 2px; }
-  .brand-name-ar { font-size: 14px; font-weight: 700; color:#334155; }
-  .kv { font-size: 11.5px; color: #334155; display: flex; gap: 6px; justify-content: flex-end; }
-  .kv b { color: #0f172a; font-weight: 700; }
-  .due { margin-top: 10px; border: 1.5px solid #111827; border-radius: 6px; padding: 6px 8px; display: inline-block; text-align: right; }
-  .due .lbl { font-size: 11px; color: #475569; }
-  .due .amt { font-size: 20px; font-weight: 800; color: #0f172a; }
-  .due .amt span { font-size: 12px; font-weight: 600; }
+    /* Mode toggles */
+    .non-tax .zatca-only { display: none !important; }
+    .zatca .non-tax-only { display: none !important; }
 
-  /* table */
-  table.items { width: 100%; border-collapse: collapse; margin-top: 14px; }
-  table.items thead th { background: #f1f5f9; border-top: 1.5px solid #111827; border-bottom: 1px solid #cbd5e1; padding: 6px 6px; font-size: 11px; color: #0f172a; text-align: center; }
-  table.items thead th .ar { display:block; font-size: 10.5px; color:#64748b; }
-  table.items td { border-bottom: 1px solid #e2e8f0; padding: 7px 6px; font-size: 12px; vertical-align: top; }
-  .c-item { text-align: left; }
-  .c-num { text-align: center; white-space: nowrap; }
-  .c-num.b { font-weight: 700; }
-  .desc-en { font-weight: 700; }
-  .desc-ar { font-size: 11.5px; color:#334155; }
-  .desc-sub { font-size: 11px; color: #2563eb; }
+    /* Strict 3-Column Header Table so right block NEVER drops down */
+    .header-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+    .header-table td { vertical-align: top; }
+    .col-left { width: 34%; text-align: left; }
+    .col-mid { width: 26%; text-align: left; padding-top: 26px; }
+    .col-right { width: 40%; text-align: right; }
 
-  /* bottom */
-  .bottom { display: flex; gap: 14px; margin-top: 16px; align-items: flex-start; }
-  .bottom-left { flex: 0 0 150px; }
-  .bottom-right { flex: 1; }
-  .qr { width: 128px; height: 128px; border: 1px solid #cbd5e1; }
-  .qr-empty { display:flex; align-items:center; justify-content:center; color:#94a3b8; font-size: 12px; }
-  .qr-note { font-size: 9px; color: #475569; margin-top: 4px; line-height: 1.35; }
-  .qr-note .ar { direction: rtl; text-align: right; }
-  .totals { width: 100%; }
-  .totals .row { display: flex; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding: 7px 4px; font-size: 13px; }
-  .totals .row .lbl .ar { display:block; font-size: 10.5px; color:#64748b; }
-  .totals .row.total { border-bottom: none; border-top: 2px solid #111827; font-size: 16px; font-weight: 800; }
-  .totals .cur { color: #64748b; font-size: 11px; margin-inline-end: 6px; }
-  .nontax-box { border: 1.5px solid #cbd5e1; border-radius: 6px; padding: 10px; }
-  .nontax-title { font-weight: 800; color: #0f172a; margin-bottom: 6px; }
-  .nontax-remarks { font-size: 11.5px; color: #475569; min-height: 40px; }
-  .sign-row { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 26px; }
-  .sign-line { border-top: 1px solid #94a3b8; padding-top: 4px; font-size: 10.5px; color: #64748b; width: 45%; }
-  .stamp { font-size: 10.5px; color: #94a3b8; }
-  .stamp img { max-height: 60px; }
-  .notes { margin-top: 14px; font-size: 11px; color: #475569; }
-  .notes .ar { direction: rtl; }
-</style>
+    .doc-title { font-size: 20px; font-weight: 800; margin-bottom: 22px; }
+    .doc-title .ar { font-size: 18px; font-weight: 700; }
+    .bill-lbl { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 6px; }
+    .customer-val { font-size: 15px; font-weight: 800; text-transform: uppercase; }
+
+    .meta-block { margin-bottom: 14px; }
+    .meta-lbl { font-size: 12.5px; font-weight: 700; color: #334155; }
+    .meta-val { font-size: 14px; font-weight: 700; margin-top: 2px; }
+
+    .agency-en { font-size: 17px; font-weight: 800; }
+    .agency-ar { font-family: 'Cairo', sans-serif; font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .agency-meta { font-size: 12px; font-weight: 600; line-height: 1.65; color: #1e293b; }
+
+    .total-due-box { margin-top: 14px; display: inline-block; text-align: right; }
+    .total-due-lbl { font-size: 12px; font-weight: 700; color: #334155; }
+    .total-due-val { font-size: 24px; font-weight: 800; margin-top: 2px; }
+    .total-due-val small { font-size: 13px; font-weight: 600; color: #64748b; margin-right: 8px; }
+
+    /* Line Items Table */
+    .items-table { width: 100%; border-collapse: collapse; margin-bottom: 22px; }
+    .items-table th {
+      border-top: 1.5px solid #cbd5e1;
+      border-bottom: 1.5px solid #cbd5e1;
+      padding: 9px 6px;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: center;
+    }
+    .items-table th:first-child { text-align: left; }
+    .items-table th:last-child { text-align: right; }
+    .items-table td {
+      padding: 12px 6px;
+      font-size: 13.5px;
+      font-weight: 600;
+      text-align: center;
+      border-bottom: 1.5px solid #cbd5e1;
+    }
+    .items-table td:first-child { text-align: left; font-weight: 700; }
+    .items-table td:last-child { text-align: right; font-weight: 700; }
+
+    /* Bottom QR & Totals Table */
+    .bottom-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .bottom-table td { vertical-align: top; }
+    .qr-box img { width: 130px; height: 130px; display: block; }
+    .zatca-note { margin-top: 14px; font-size: 12px; font-weight: 600; line-height: 1.55; }
+
+    .totals-table { width: 320px; margin-left: auto; border-collapse: collapse; }
+    .totals-table td { padding: 8px 4px; font-weight: 700; border-bottom: 1px solid #e2e8f0; }
+    .totals-table tr:last-child td { border-bottom: none; font-size: 16px; font-weight: 800; padding-top: 10px; }
+    .t-lbl { text-align: left; }
+    .t-curr { text-align: right; color: #64748b; font-size: 12px; width: 65px; }
+    .t-num { text-align: right; width: 95px; }
+
+    /* Non-tax block */
+    .nontax-title { font-size: 14px; font-weight: 800; margin-bottom: 8px; }
+    .nontax-remark { font-size: 12px; font-weight: 600; line-height: 1.5; color: #334155; min-height: 48px; }
+    .sign-row { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 34px; }
+    .sign-line { border-top: 1px solid #94a3b8; padding-top: 4px; font-size: 11px; color: #64748b; width: 55%; }
+    .stamp { font-size: 11px; color: #94a3b8; }
+    .stamp img { max-height: 60px; }
+  </style>
 </head>
-<body>
-  <div class="sheet">
-    <table class="head"><tbody><tr>
+<body class="${bodyClass}">
+  <table class="header-table">
+    <tr>
       <td class="col-left">
-        <div class="doc-title">${esc(p.title)}</div>
-        <div class="doc-title-ar ar" dir="rtl">${esc(p.titleAr)}</div>
-        <div class="bill-label">Bill to <span class="ar" dir="rtl">العميل</span></div>
-        <div class="bill-name">${esc(p.customerName)}</div>
-        ${p.customerNameAr ? `<div class="desc-ar ar" dir="rtl">${esc(p.customerNameAr)}</div>` : ""}
+        <div class="doc-title">${esc(titleEn)}<span class="ar">${esc(titleAr)}</span></div>
+        <div class="bill-lbl">Bill to<span class="ar">العميل</span></div>
+        <div class="customer-val">${esc(p.customerName)}</div>
+        ${p.customerNameAr ? `<div class="ar" dir="rtl" style="font-size:13px;font-weight:700;">${esc(p.customerNameAr)}</div>` : ""}
       </td>
       <td class="col-mid">
-        <div class="meta-row"><span class="k">Invoice number <span class="ar">رقم الفاتورة</span></span><b>${esc(p.invoiceNumber)}</b></div>
-        <div class="meta-row"><span class="k">Date <span class="ar">التاريخ</span></span><b>${esc(p.date || "")}</b></div>
-        <div class="meta-row"><span class="k">Due date <span class="ar">تاريخ الإستحقاق</span></span><b>${esc(p.dueDate || "")}</b></div>
-        ${p.pnr ? `<div class="meta-row"><span class="k">PNR <span class="ar">رقم الحجز</span></span><b>${esc(p.pnr)}</b></div>` : ""}
-        ${p.passengerName ? `<div class="meta-row"><span class="k">Passenger <span class="ar">المسافر</span></span><b>${esc(p.passengerName)}</b></div>` : ""}
+        <div class="meta-block">
+          <div class="meta-lbl">Invoice number<span class="ar">رقم الفاتورة</span></div>
+          <div class="meta-val">${esc(p.invoiceNumber)}</div>
+        </div>
+        <div class="meta-block">
+          <div class="meta-lbl">Date<span class="ar">التاريخ</span></div>
+          <div class="meta-val">${esc(p.date || "")}</div>
+        </div>
+        <div class="meta-block">
+          <div class="meta-lbl">Due date<span class="ar">تاريخ الإستحقاق</span></div>
+          <div class="meta-val">${esc(p.dueDate || "")}</div>
+        </div>
+        ${p.pnr ? `<div class="meta-block"><div class="meta-lbl">PNR<span class="ar">رقم الحجز</span></div><div class="meta-val">${esc(p.pnr)}</div></div>` : ""}
+        ${p.passengerName ? `<div class="meta-block"><div class="meta-lbl">Passenger<span class="ar">المسافر</span></div><div class="meta-val">${esc(p.passengerName)}</div></div>` : ""}
       </td>
       <td class="col-right">
-        ${p.brand.logo ? `<img class="brand-logo" src="${p.brand.logo}" alt="logo" />` : ""}
-        <div class="brand-name">${esc(p.brand.name)}</div>
-        ${p.brand.nameAr ? `<div class="brand-name-ar ar" dir="rtl">${esc(p.brand.nameAr)}</div>` : ""}
-        ${p.brand.tagline ? `<div class="kv"><span>${esc(p.brand.tagline)}</span></div>` : ""}
-        ${phoneLine}
-        ${vatLine}
-        ${licenseLine}
-        <div class="due">
-          <div class="lbl">Total due <span class="ar" dir="rtl">الرصيد المستحق</span></div>
-          <div class="amt"><span>${esc(sym)}</span> ${money(p.balanceDue ?? p.totalAmount)}</div>
+        <div class="agency-en">${esc(p.brand.name || "Dazzling Travel & Tours")}</div>
+        <div class="agency-ar">${esc(p.brand.nameAr || "مبهر للسفر والسياحة")}</div>
+        <div class="agency-meta">
+          <div>رقم الهاتف : ${esc(p.brand.phone || "+966 14 321 2300")}</div>
+          <div class="zatca-only">Vat number | رقم التسجيل الضريبي</div>
+          <div class="zatca-only"><strong>${esc(p.brand.vat || "")}</strong></div>
+          <div>${esc(p.brand.licenseNo || "")} : رقم ترخيص وزارة السياحة (${esc(p.brand.licenseTypeAr || "وكيل سفر وسياحه")})</div>
+        </div>
+        <div class="total-due-box">
+          <div class="total-due-lbl">Total due<span class="ar">الرصيد المستحق</span></div>
+          <div class="total-due-val"><small>${esc(sym)}</small>${money(p.balanceDue ?? p.totalAmount)}</div>
         </div>
       </td>
-    </tr></tbody></table>
+    </tr>
+  </table>
 
-    <table class="items">
-      <thead>
-        <tr>
-          <th style="width:38%">Item / Description<span class="ar" dir="rtl">الوصف / المنتج</span></th>
-          <th style="width:8%">Quantity<span class="ar" dir="rtl">الكمية</span></th>
-          <th style="width:15%">Price<span class="ar" dir="rtl">السعر</span></th>
-          <th style="width:16%">Taxable amount<span class="ar" dir="rtl">المبلغ الخاضع للضريبة</span></th>
-          <th style="width:10%">VAT<span class="ar" dir="rtl">القيمة المضافة</span></th>
-          <th style="width:13%">Amount<span class="ar" dir="rtl">المجموع</span></th>
-        </tr>
-      </thead>
-      <tbody>${rows || `<tr><td colspan="6" style="text-align:center;color:#94a3b8">—</td></tr>`}</tbody>
-    </table>
+  <table class="items-table">
+    <thead>
+      <tr>
+        <th>Item / Description<span class="ar">الوصف / المنتج</span></th>
+        <th>Quantity<span class="ar">الكمية</span></th>
+        <th>Price<span class="ar">السعر</span></th>
+        <th>Taxable amount<span class="ar">المبلغ الخاضع للضريبة</span></th>
+        <th>VAT<span class="ar">القيمة المضافة</span></th>
+        <th>Amount<span class="ar">المجموع</span></th>
+      </tr>
+    </thead>
+    <tbody>
+${rows || `<tr><td colspan="6" style="text-align:center;color:#94a3b8">—</td></tr>`}
+    </tbody>
+  </table>
 
-    <div class="bottom">
-      <div class="bottom-left">${qrBlock}</div>
-      <div class="bottom-right">
-        <div class="totals">
-          <div class="row"><span class="lbl">SubTotal <span class="ar" dir="rtl">المجموع الفرعي</span></span><span><span class="cur">${esc(sym)}</span><b>${money(p.subTotal)}</b></span></div>
-          <div class="row"><span class="lbl">Total VAT <span class="ar" dir="rtl">إجمالي ضريبة القيمة المضافة</span></span><span><span class="cur">${esc(sym)}</span><b>${money(p.taxAmount)}</b></span></div>
-          <div class="row total"><span class="lbl">Total <span class="ar" dir="rtl">الاجمالي</span></span><span><span class="cur">${esc(sym)}</span><b>${money(p.totalAmount)}</b></span></div>
+  <table class="bottom-table">
+    <tr>
+      <td style="width: 52%;">
+        <div class="qr-box zatca-only">
+          ${p.qrDataUrl ? `<img src="${p.qrDataUrl}" alt="ZATCA QR" />` : ""}
         </div>
-        ${p.notes || p.notesAr ? `<div class="notes">${p.notes ? esc(p.notes) : ""}${p.notesAr ? `<div class="ar" dir="rtl">${esc(p.notesAr)}</div>` : ""}</div>` : ""}
-      </div>
-    </div>
-  </div>
+        <div class="zatca-note zatca-only">
+          <div>This Qr code encoded as per ZATCA e-invoicing requirements</div>
+          <div class="ar">رمز الاستجابة السريعة مشفر بحسب متطلبات هيئة الزكاة والضريبة والجمارك للفوترة الإلكترونية</div>
+        </div>
+        ${nonTaxBlock}
+      </td>
+      <td style="width: 48%;">
+        <table class="totals-table">
+          <tr>
+            <td class="t-lbl">SubTotal<span class="ar">المجموع الفرعي</span></td>
+            <td class="t-curr">${esc(sym)}</td>
+            <td class="t-num">${money(p.subTotal)}</td>
+          </tr>
+          <tr>
+            <td class="t-lbl">Total vat<span class="ar">إجمالي ضريبة القيمة المضافة</span></td>
+            <td class="t-curr">${esc(sym)}</td>
+            <td class="t-num">${money(p.taxAmount)}</td>
+          </tr>
+          <tr>
+            <td class="t-lbl">Total<span class="ar">الاجمالي</span></td>
+            <td class="t-curr">${esc(sym)}</td>
+            <td class="t-num">${money(p.totalAmount)}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
 </body>
 </html>`;
 }
